@@ -10,33 +10,36 @@ import ipaddress
 import re
 
 # Только ASCII: cmd.exe плохо работает с не-латиницей в .bat-файлах.
+#
+# Запускается без единого видимого окна, кроме стандартного запроса Windows
+# «Разрешить этому приложению вносить изменения?» — его показывает сама
+# Windows поверх всего, и ни один скрипт не может ни скрыть его, ни пройти
+# мимо него. Дальше всё (скачивание, установка Python/Tailscale, настройка
+# агента) идёт в скрытом окне и только пишется в журнал C:\DachaAgent\install.log.
+# Поэтому ни окна с вопросами, ни окна с «Готово»/с ошибкой тут нет: результат
+# смотрят на сайте (появился ли компьютер) или в этом журнале.
 _TEMPLATE = r"""@echo off
 rem Dacha agent installer. Made by your own site.
 rem THIS FILE CONTAINS SECRET KEYS - do not share it or upload it anywhere.
-title Dacha - install
+rem Runs with no visible window except the one Windows "allow this app" prompt.
 set "DACHA_SERVER=@@SERVER@@"
 set "DACHA_TOKEN=@@TOKEN@@"
 set "DACHA_TSKEY=@@TSKEY@@"
 
 net session >nul 2>&1
 if %errorlevel% equ 0 goto :admin
-echo Requesting administrator rights...
-powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '%~f0' -WindowStyle Hidden -Verb RunAs" >nul 2>&1
 exit /b
 
 :admin
-echo Downloading the installer from GitHub...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $ProgressPreference='SilentlyContinue'; $f=Join-Path $env:TEMP 'dacha-install.ps1'; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/@@REPO@@/@@BRANCH@@/install/install.ps1' -OutFile $f -ErrorAction Stop } catch { Write-Host 'Could not download the installer:' $_.Exception.Message; exit 1 }; & $f; exit $LASTEXITCODE"
+if not exist "C:\DachaAgent" mkdir "C:\DachaAgent" >nul 2>&1
+powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $ProgressPreference='SilentlyContinue'; $f=Join-Path $env:TEMP 'dacha-install.ps1'; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/@@REPO@@/@@BRANCH@@/install/install.ps1' -OutFile $f -ErrorAction Stop } catch { $_.Exception.Message | Out-File -Append 'C:\DachaAgent\install.log'; exit 1 }; & $f; exit $LASTEXITCODE" >nul 2>&1
 if errorlevel 1 goto :failed
-echo.
-echo Done. This file contains secret keys, so it deletes itself now.
-pause
 (goto) 2>nul & del "%~f0"
+exit /b
 
 :failed
-echo.
-echo Something went wrong. The file was NOT deleted, you can run it again.
-pause
+exit /b 1
 """
 
 RE_URL = re.compile(r"^https://[A-Za-z0-9.-]+(:\d{1,5})?$")
