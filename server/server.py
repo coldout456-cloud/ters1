@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import os
 import sys
 import time
@@ -22,6 +23,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.staticfiles import StaticFiles
 
+from dacha_installer import InstallerError, build_installer, parse_agent_address
 from security import verify_password
 
 BASE = Path(__file__).parent
@@ -55,6 +57,11 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1") == "1"  # 0 — тольк�
 TRUST_PROXY = os.environ.get("TRUST_PROXY", "0") == "1"  # 1 — если перед сервером стоит Caddy/nginx
 HOST = os.environ.get("SERVER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SERVER_PORT", "8000"))
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")  # https://адрес-сайта: нужен для установщика дачи
+TAILSCALE_AUTHKEY = os.environ.get("TAILSCALE_AUTHKEY", "")  # необязательно: вшивается в установщик
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "coldout456-cloud/ters1")
+GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
+STATE_FILE = Path(os.environ.get("STATE_FILE", str(BASE / "agent_state.json")))  # последний адрес агента
 
 
 def check_config() -> None:
@@ -76,11 +83,31 @@ def check_config() -> None:
 agent: httpx.AsyncClient  # создаётся при старте
 
 
+def load_saved_agent_url() -> str:
+    """Адрес агента, который он сам сообщил в прошлый раз (пусто, если файла нет или он испорчен)."""
+    try:
+        url = str(json.loads(STATE_FILE.read_text(encoding="utf-8")).get("agent_url", ""))
+        parsed = urlparse(url)
+        parse_agent_address(parsed.hostname, parsed.port)  # повторная проверка: файл мог быть подменён
+        return url
+    except Exception:
+        return ""
+
+
+def save_agent_url(url: str) -> None:
+    try:
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"agent_url": url, "updated": time.time()}), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+    except OSError:
+        pass  # не страшно: агент сообщит адрес заново при следующей регистрации
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global agent
     agent = httpx.AsyncClient(
-        base_url=AGENT_URL,
+        base_url=load_saved_agent_url() or AGENT_URL,
         headers={"X-Agent-Token": AGENT_TOKEN},
         timeout=httpx.Timeout(10.0, read=30.0),
     )
@@ -200,6 +227,52 @@ async def login(request: Request):
 async def logout(request: Request):
     request.session.clear()
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Дача: регистрация агента и персональный установщик
+# --------------------------------------------------------------------------- #
+
+@app.post("/api/agent/register")
+async def agent_register(request: Request):
+    """Агент на даче сам сообщает свой адрес в Tailscale. Вход на сайт не нужен, нужен токен."""
+    key = "agent:" + client_ip(request)
+    if is_locked(key):
+        raise HTTPException(429, "Слишком много попыток")
+    sent = request.headers.get("x-agent-token", "")
+    if not hmac.compare_digest(sent.encode(), AGENT_TOKEN.encode()):
+        _failures.setdefault(key, []).append(time.time())
+        await asyncio.sleep(1)
+        raise HTTPException(401, "Неверный токен")
+    try:
+        data = await request.json()
+        host, port = parse_agent_address(data.get("host"), data.get("port", 8765))
+    except Exception:
+        raise HTTPException(400, "Некорректный адрес агента")
+    url = f"http://{host}:{port}"
+    if str(agent.base_url).rstrip("/") != url:
+        agent.base_url = url
+        save_agent_url(url)
+    return {"ok": True}
+
+
+@app.get("/api/dacha/info", dependencies=[Depends(require_user)])
+async def dacha_info():
+    return {"installer_ready": bool(PUBLIC_URL), "tailscale_key": bool(TAILSCALE_AUTHKEY)}
+
+
+@app.get("/api/dacha/installer", dependencies=[Depends(require_user)])
+async def dacha_installer():
+    """Готовый установщик для дачи: .bat с вшитыми адресом сайта, токеном и ключом Tailscale."""
+    try:
+        data = build_installer(PUBLIC_URL, AGENT_TOKEN, TAILSCALE_AUTHKEY, GITHUB_REPO, GITHUB_BRANCH)
+    except InstallerError as e:
+        raise HTTPException(503, str(e))
+    return Response(
+        data,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": 'attachment; filename="dacha-install.bat"', "Cache-Control": "no-store"},
+    )
 
 
 # --------------------------------------------------------------------------- #

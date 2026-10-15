@@ -135,6 +135,19 @@ table.files a { color: var(--accent); text-decoration: none; }
 #screen { max-width: 100%; height: auto; border-radius: 6px; }
 #screen:fullscreen { background: #000; object-fit: contain; width: 100vw; height: 100vh; }
 
+/* установка */
+.card {
+  max-width: 640px;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.card h2 { margin: 0 0 4px; font-size: 20px; }
+.steps { padding-left: 20px; line-height: 1.8; }
+.warn { color: var(--danger); font-size: 14px; }
+code { padding: 1px 6px; border-radius: 6px; background: var(--bg); font-size: 13px; }
+
 /* вход */
 .login-body { display: grid; place-items: center; min-height: 100vh; padding: 20px; }
 .login-card {

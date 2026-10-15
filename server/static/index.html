@@ -17,12 +17,13 @@
     <nav class="tabs">
       <button class="tab active" data-tab="files">Файлы</button>
       <button class="tab" data-tab="screen">Экран</button>
+      <button class="tab" data-tab="setup">Установка</button>
     </nav>
     <button id="logout" class="button ghost">Выйти</button>
   </header>
 
   <main>
-    <section id="tab-files">
+    <section id="tab-files" class="pane">
       <div class="toolbar">
         <div id="crumbs" class="crumbs"></div>
         <label id="upload-label" class="button primary">
@@ -42,7 +43,7 @@
       </div>
     </section>
 
-    <section id="tab-screen" hidden>
+    <section id="tab-screen" class="pane" hidden>
       <div class="toolbar controls">
         <button id="toggle" class="button primary">Старт</button>
         <label>Кадров/с
@@ -74,6 +75,22 @@
       <div class="screen-wrap">
         <img id="screen" alt="Экран дачного компьютера" hidden>
         <p id="screen-hint" class="muted">Нажми «Старт», чтобы увидеть экран.</p>
+      </div>
+    </section>
+
+    <section id="tab-setup" class="pane" hidden>
+      <div class="card">
+        <h2>Установка на дачный компьютер</h2>
+        <p class="muted">Один файл, один клик, ничего вводить не нужно.</p>
+        <ol class="steps">
+          <li>Открой этот сайт <b>на дачном компьютере</b> и войди.</li>
+          <li>Нажми кнопку ниже: скачается файл <code>dacha-install.bat</code>.</li>
+          <li>Запусти его двойным кликом и нажми «Да» в окне Windows.</li>
+          <li>Подожди 3–5 минут: всё скачается и настроится само. После этого файл удалит сам себя.</li>
+        </ol>
+        <p><a id="installer" class="button primary" href="/api/dacha/installer" download>Скачать установщик для дачи</a></p>
+        <p id="setup-hint" class="muted"></p>
+        <p class="warn">В файле зашиты ключи доступа к твоему компьютеру. Не пересылай его и не выкладывай никуда.</p>
       </div>
     </section>
   </main>

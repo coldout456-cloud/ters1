@@ -13,12 +13,15 @@ from __future__ import annotations
 import asyncio
 import hmac
 import io
+import json
 import os
 import re
 import secrets
 import socket
 import sys
+import threading
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -59,6 +62,7 @@ PORT = int(os.environ.get("AGENT_PORT", "8765"))
 SCREEN_BACKEND = os.environ.get("SCREEN_BACKEND", "mss")  # mss | test
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "2048"))
 MAX_STREAMS = 3
+SERVER_URL = os.environ.get("SERVER_URL", "").rstrip("/")  # адрес сайта: сюда агент сообщает свой адрес
 
 
 def parse_roots(raw: str) -> dict[str, Path]:
@@ -382,6 +386,29 @@ async def screen_stream(fps: float = 5, quality: int = 60, scale: float = 0.5, m
 
 # --------------------------------------------------------------------------- #
 
+def register_once(server_url: str, token: str, host: str, port: int, timeout: float = 10.0) -> bool:
+    """Сообщает сайту адрес агента (внутри VPN). True, если сайт принял."""
+    req = urllib.request.Request(
+        server_url + "/api/agent/register",
+        data=json.dumps({"host": host, "port": port}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Agent-Token": token},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return 200 <= r.status < 300
+    except Exception as e:
+        print(f"Не удалось сообщить адрес сайту: {e}", flush=True)
+        return False
+
+
+def _register_loop() -> None:
+    """Сообщает адрес при запуске и потом раз в 5 минут (если сайт был недоступен, пробует чаще)."""
+    while True:
+        ok = register_once(SERVER_URL, TOKEN, HOST, PORT)
+        time.sleep(300 if ok else 60)
+
+
 def main() -> None:
     if len(TOKEN) < 24:
         sys.exit(
@@ -391,6 +418,8 @@ def main() -> None:
     if not ROOTS:
         sys.exit("ALLOWED_DIRS не задан. Пример: ALLOWED_DIRS=docs=C:\\Users\\Me\\Documents")
     print(f"Агент слушает {HOST}:{PORT}, папки: {', '.join(ROOTS)}, экран: {SCREEN_BACKEND}")
+    if SERVER_URL and not HOST.startswith("127."):
+        threading.Thread(target=_register_loop, daemon=True).start()
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 
 

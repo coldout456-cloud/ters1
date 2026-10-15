@@ -22,6 +22,17 @@ die()  { printf '\n\033[1;31mОШИБКА: %s\033[0m\n' "$*" >&2; exit 1; }
 # Команда от имени служебного пользователя (HOME задаём явно, чтобы git и pip не лезли в /root)
 as_app() { runuser -u "$APP_USER" -- env HOME="$BASE" "$@"; }
 
+# Записать KEY=VALUE в .env (заменить, если уже есть)
+set_env() {
+  local key="$1" val="$2" f="$SRV/.env"
+  if grep -q "^${key}=" "$f"; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$f"
+  else
+    [ -z "$(tail -c1 "$f")" ] || echo >>"$f"
+    echo "${key}=${val}" >>"$f"
+  fi
+}
+
 main() {
   local DOMAIN="${1:-}"
 
@@ -124,6 +135,8 @@ PYEOF
     )
     ok "Файл .env создан (логин: admin)"
   fi
+  # Адрес сайта нужен, чтобы сайт мог выдавать установщик для дачи
+  set_env PUBLIC_URL "https://$DOMAIN"
   chown "$APP_USER:$APP_USER" "$SRV/.env"
   chmod 600 "$SRV/.env"
 
@@ -178,12 +191,38 @@ ip="${1:-}"
 [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "Использование: dacha-set-agent 100.x.y.z"; exit 1; }
 f=/opt/dacha/app/server/.env
 sed -i "s|^AGENT_URL=.*|AGENT_URL=http://$ip:8765|" "$f"
+rm -f /opt/dacha/app/server/agent_state.json   # забыть адрес, который агент сообщал сам
 chown dacha:dacha "$f"
 chmod 600 "$f"
 systemctl restart dacha
 echo "Готово: сервер теперь обращается к агенту по адресу $ip"
 HELPER
   chmod +x /usr/local/bin/dacha-set-agent
+
+  # Помощник: сохранить ключ Tailscale, чтобы установщик для дачи входил в VPN сам
+  cat >/usr/local/bin/dacha-set-tskey <<'HELPER2'
+#!/usr/bin/env bash
+# Использование: dacha-set-tskey [tskey-auth-...]   (без аргумента спросит ключ скрытым вводом)
+set -euo pipefail
+key="${1:-}"
+if [ -z "$key" ]; then
+  read -rsp "Вставь ключ Tailscale (tskey-auth-...): " key </dev/tty
+  echo
+fi
+[[ "$key" =~ ^tskey-[A-Za-z0-9-]{10,200}$ ]] || { echo "Это не похоже на ключ Tailscale (должен начинаться с tskey-)."; exit 1; }
+f=/opt/dacha/app/server/.env
+if grep -q '^TAILSCALE_AUTHKEY=' "$f"; then
+  sed -i "s|^TAILSCALE_AUTHKEY=.*|TAILSCALE_AUTHKEY=$key|" "$f"
+else
+  [ -z "$(tail -c1 "$f")" ] || echo >>"$f"
+  echo "TAILSCALE_AUTHKEY=$key" >>"$f"
+fi
+chown dacha:dacha "$f"
+chmod 600 "$f"
+systemctl restart dacha
+echo "Готово: ключ сохранён, установщик для дачи теперь вшивает его."
+HELPER2
+  chmod +x /usr/local/bin/dacha-set-tskey
 
   # ---------------------------------------------------------------- 7. Caddy (HTTPS)
   say "Настраиваю HTTPS (Caddy)"
@@ -255,12 +294,14 @@ CADDY
   printf '\n\033[1;32m================ ГОТОВО ================\033[0m\n'
   echo "Сайт:   https://$DOMAIN   (логин: admin, пароль — тот, что ты придумал)"
   echo
-  echo "Токен агента — его попросит установщик на даче:"
-  echo "  $TOKEN"
+  echo "Установка на дачу — в один клик, ничего вводить не нужно:"
+  echo "  1. На дачном компьютере открой https://$DOMAIN и войди."
+  echo "  2. Вкладка «Установка» -> «Скачать установщик для дачи»."
+  echo "  3. Запусти скачанный файл двойным кликом и нажми «Да»."
   echo
-  echo "Дальше: на даче запусти install.bat. В конце он покажет команду вида"
-  echo "  dacha-set-agent 100.x.y.z"
-  echo "Выполни её здесь, на сервере, — и сайт увидит дачный компьютер."
+  echo "Необязательно, но так на даче вообще не придётся входить в Tailscale вручную:"
+  echo "  создай в панели Tailscale ключ (Settings -> Keys -> Generate auth key, галочка Reusable)"
+  echo "  и выполни здесь команду:  dacha-set-tskey"
 }
 
 main "$@"

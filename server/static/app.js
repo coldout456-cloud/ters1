@@ -271,16 +271,38 @@ async function loadMonitors() {
   }
 }
 
+// ------------------------------------------------------------------ установка
+
+async function loadSetupInfo() {
+  const hintEl = $("#setup-hint");
+  try {
+    const info = await (await api("/api/dacha/info")).json();
+    $("#installer").classList.toggle("disabled", !info.installer_ready);
+    const lines = [];
+    if (!info.installer_ready) {
+      lines.push("На сервере не задан адрес сайта (PUBLIC_URL): запусти скрипт установки сервера ещё раз.");
+    }
+    lines.push(
+      info.tailscale_key
+        ? "Ключ Tailscale вшит в установщик: вход в VPN пройдёт сам."
+        : "Ключ Tailscale не задан: во время установки откроется страница входа в Tailscale, на ней нужно будет нажать «Connect».",
+    );
+    hintEl.textContent = lines.join(" ");
+  } catch (err) {
+    hintEl.textContent = err.message;
+  }
+}
+
 // ------------------------------------------------------------------ вкладки
 
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
     const name = tab.dataset.tab;
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
-    $("#tab-files").hidden = name !== "files";
-    $("#tab-screen").hidden = name !== "screen";
+    document.querySelectorAll(".pane").forEach((p) => (p.hidden = p.id !== "tab-" + name));
     if (name === "screen") loadMonitors();
     else if (streaming) stopStream(); // не гоняем трафик, пока экран не нужен
+    if (name === "setup") loadSetupInfo();
   });
 }
 

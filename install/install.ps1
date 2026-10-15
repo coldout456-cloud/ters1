@@ -1,6 +1,10 @@
 ﻿# Установщик агента «Дача» для Windows 10/11.
-# Запускается через install.bat. Безопасно запускать повторно: токен, настройки и папки сохраняются,
-# обновляется только код.
+#
+# Обычно запускается из персонального установщика, который выдаёт сайт (dacha-install.bat):
+# адрес сайта, токен и ключ Tailscale приходят через переменные окружения DACHA_SERVER,
+# DACHA_TOKEN, DACHA_TSKEY, и вопросов нет вообще.
+# Ручной запуск (install.bat с GitHub) задаёт три вопроса.
+# Повторный запуск безопасен: папки и настройки сохраняются, обновляется код.
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -24,7 +28,7 @@ function Ok($t)   { Write-Host "    $t" -ForegroundColor Green }
 function Warn($t) { Write-Host "    ! $t" -ForegroundColor Yellow }
 function Fail($t) { throw $t }
 
-# ----------------------------------------------------------------------------- ввод
+# ----------------------------------------------------------------------------- ввод и настройки
 function ReadSecret($prompt) {
     $s = Read-Host $prompt -AsSecureString
     $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
@@ -38,6 +42,18 @@ function Get-EnvValue($file, $key) {
         if ($line -match "^\s*$key\s*=\s*(.*)$") { return $Matches[1].Trim() }
     }
     return $null
+}
+
+function Set-EnvValue($file, $key, $value) {
+    $lines = @()
+    if (Test-Path $file) { $lines = [IO.File]::ReadAllLines($file) }
+    $found = $false
+    $out = @(foreach ($l in $lines) {
+        if ($l -match "^\s*$key\s*=") { $found = $true; "$key=$value" } else { $l }
+    })
+    if (-not $found) { $out += "$key=$value" }
+    # UTF-8 БЕЗ BOM: иначе агент не прочитает первую строку
+    [IO.File]::WriteAllText($file, (($out -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding($false)))
 }
 
 function Test-FolderAllowed($path) {
@@ -56,6 +72,25 @@ function Test-FolderAllowed($path) {
         }
     }
     return $null
+}
+
+# Папки по умолчанию для режима «в один клик»: стандартные папки пользователя (если они есть).
+# Изменить потом: файл C:\DachaAgent\agent\.env, строка ALLOWED_DIRS.
+function Get-DefaultFolders {
+    $cands = [ordered]@{
+        documents = [Environment]::GetFolderPath('MyDocuments')
+        desktop   = [Environment]::GetFolderPath('DesktopDirectory')
+        pictures  = [Environment]::GetFolderPath('MyPictures')
+        videos    = [Environment]::GetFolderPath('MyVideos')
+        music     = [Environment]::GetFolderPath('MyMusic')
+        downloads = (Join-Path $env:USERPROFILE 'Downloads')
+    }
+    $parts = @()
+    foreach ($k in $cands.Keys) {
+        $p = $cands[$k]
+        if ($p -and (Test-Path $p -PathType Container) -and -not (Test-FolderAllowed $p)) { $parts += "$k=$p" }
+    }
+    return ($parts -join ';')
 }
 
 function Select-Folders {
@@ -148,11 +183,11 @@ function Install-Tailscale {
     $page = (Invoke-WebRequest -UseBasicParsing -Uri 'https://pkgs.tailscale.com/stable/' -ErrorAction Stop).Content
     $best = [regex]::Matches($page, "tailscale-setup-(\d+\.\d+\.\d+)-$arch\.msi") |
         Sort-Object { [version]$_.Groups[1].Value } -Descending | Select-Object -First 1
-    if (-not $best) { Fail 'Не нашёл установщик Tailscale на pkgs.tailscale.com. Поставь Tailscale вручную (tailscale.com/download) и запусти install.bat ещё раз.' }
+    if (-not $best) { Fail 'Не нашёл установщик Tailscale на pkgs.tailscale.com. Поставь Tailscale вручную (tailscale.com/download) и запусти установщик ещё раз.' }
     $msi = Join-Path $env:TEMP $best.Value
     Invoke-WebRequest -UseBasicParsing -Uri ('https://pkgs.tailscale.com/stable/' + $best.Value) -OutFile $msi -ErrorAction Stop
     Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart TS_NOLAUNCH=1" -Wait | Out-Null
-    if (-not (Test-Path $TsExe)) { Fail 'Tailscale не установился. Поставь его вручную (tailscale.com/download) и запусти install.bat ещё раз.' }
+    if (-not (Test-Path $TsExe)) { Fail 'Tailscale не установился. Поставь его вручную (tailscale.com/download) и запусти установщик ещё раз.' }
 }
 
 function Get-TsState {
@@ -178,13 +213,36 @@ function Connect-Tailscale($authKey) {
         & $TsExe set --unattended=true 2>$null | Out-Null
         return
     }
+
     if ($authKey) {
         & $TsExe up "--auth-key=$authKey" --unattended --hostname=dacha-pc
-    } else {
-        Write-Host '    Сейчас появится ссылка для входа. Открой её в браузере и войди в ТОТ ЖЕ аккаунт Tailscale, что и на сервере.' -ForegroundColor Yellow
-        & $TsExe up --unattended --hostname=dacha-pc
+        if ($LASTEXITCODE -ne 0) { Fail 'Не удалось подключить Tailscale: ключ неверный, просрочен или уже использован. Создай новый ключ (Reusable) и выполни на сервере dacha-set-tskey.' }
+        return
     }
-    if ($LASTEXITCODE -ne 0) { Fail 'Не удалось подключить Tailscale (проверь ключ или повтори вход).' }
+
+    # Ключа нет: запускаем вход и сами открываем страницу входа в браузере
+    $outf = Join-Path $env:TEMP 'ts-up.out'
+    $errf = Join-Path $env:TEMP 'ts-up.err'
+    Remove-Item $outf, $errf -Force -ErrorAction SilentlyContinue
+    $p = Start-Process -FilePath $TsExe -ArgumentList 'up', '--unattended', '--hostname=dacha-pc' -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $outf -RedirectStandardError $errf
+    $opened   = $false
+    $deadline = (Get-Date).AddMinutes(10)
+    while (-not $p.HasExited -and (Get-Date) -lt $deadline) {
+        if (-not $opened) {
+            $txt = ''
+            foreach ($f in $outf, $errf) { if (Test-Path $f) { $txt += (Get-Content $f -Raw -ErrorAction SilentlyContinue) } }
+            if ($txt -match '(https://login\.tailscale\.com/\S+)') {
+                Write-Host '    Открываю страницу входа в Tailscale. Войди в ТОТ ЖЕ аккаунт, что и на сервере, и нажми «Connect».' -ForegroundColor Yellow
+                Start-Process $Matches[1]
+                $opened = $true
+            }
+        }
+        Start-Sleep 1
+    }
+    if (-not $p.HasExited) { try { $p.Kill() } catch {}; Fail 'Вход в Tailscale не завершён за 10 минут. Запусти установщик ещё раз.' }
+    $p.WaitForExit()
+    if ($p.ExitCode -ne 0) { Fail 'Не удалось подключить Tailscale. Запусти установщик ещё раз.' }
 }
 
 # ----------------------------------------------------------------------------- остановка агента
@@ -197,28 +255,49 @@ function Stop-Agent {
 }
 
 # ============================================================================= основной ход
+$exitCode = 0
 try {
     Write-Host ''
     Write-Host '  Дача: установка агента' -ForegroundColor White
     Write-Host '  ----------------------'
 
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    if (-not $isAdmin) { Fail 'Нужны права администратора. Запусти install.bat двойным кликом и нажми «Да».' }
+    if (-not $isAdmin) { Fail 'Нужны права администратора. Запусти установщик двойным кликом и нажми «Да».' }
 
-    # ---- 1. вопросы (все сразу, чтобы потом можно было отойти)
-    $update  = Test-Path $EnvFile
-    $token   = $null
-    $allowed = $null
-    $authKey = ''
+    # ---- 1. исходные данные: из персонального установщика (без вопросов) или вопросами
+    $envServer = "$env:DACHA_SERVER".Trim()
+    $envToken  = "$env:DACHA_TOKEN".Trim()
+    $envTsKey  = "$env:DACHA_TSKEY".Trim()
+    $oneClick  = ($envServer -match '^https://[A-Za-z0-9.\-]+(:\d+)?$') -and ($envToken -match '^[A-Za-z0-9_\-]{24,}$')
 
-    if ($update) {
+    $update     = Test-Path $EnvFile
+    $token      = $null
+    $allowed    = $null
+    $authKey    = ''
+    $serverUrl  = ''
+
+    if ($oneClick) {
+        $token     = $envToken
+        $serverUrl = $envServer
+        if ($envTsKey -match '^tskey-') { $authKey = $envTsKey }
+        if ($update) {
+            Say 'Найдена прежняя установка: обновлю код и заново свяжу компьютер с сайтом'
+        } else {
+            Say 'Устанавливаю без вопросов: настройки взяты из установщика с сайта'
+            $allowed = Get-DefaultFolders
+            if (-not $allowed) { Fail 'Не нашёл ни одной подходящей папки пользователя (Документы, Рабочий стол и т.д.).' }
+        }
+    } elseif ($update) {
         Say 'Найдена прежняя установка: обновлю код, настройки и токен сохраню'
-        $token = Get-EnvValue $EnvFile 'AGENT_TOKEN'
+        $token     = Get-EnvValue $EnvFile 'AGENT_TOKEN'
+        $serverUrl = "$(Get-EnvValue $EnvFile 'SERVER_URL')"
         if (-not $token) { Fail "Файл настроек повреждён. Удали папку $InstallDir и запусти установку заново." }
     } else {
         Say 'Несколько вопросов (после них можно отойти, дальше всё пойдёт само)'
         Write-Host ''
-        Write-Host '  1) Токен агента. Ты сохранил его при установке сервера. Вставь сюда (символы не показываются).'
+        Write-Host '  Совет: проще скачать персональный установщик на сайте (вкладка «Установка»), тогда вопросов не будет.'
+        Write-Host ''
+        Write-Host '  1) Токен агента. Вставь сюда (символы не показываются).'
         for ($try = 1; $try -le 3 -and -not $token; $try++) {
             $t = (ReadSecret '     Токен агента').Trim()
             Write-Host "     Принято символов: $($t.Length)"
@@ -228,8 +307,13 @@ try {
         if (-not $token) { Fail 'Токен не введён.' }
 
         Write-Host ''
-        Write-Host '  2) Ключ Tailscale (tskey-auth-...) из панели Tailscale: Settings -> Keys -> Generate auth key.'
-        Write-Host '     Если ключа нет, просто нажми Enter: вход будет через браузер.'
+        Write-Host '  2) Адрес сайта (https://...), чтобы дача сама сообщила ему свой адрес. Enter - пропустить.'
+        $s = (Read-Host '     Адрес сайта').Trim().TrimEnd('/')
+        if ($s -match '^https://[A-Za-z0-9.\-]+(:\d+)?$') { $serverUrl = $s }
+        elseif ($s) { Warn 'Это не похоже на адрес вида https://имя.duckdns.org, пропускаю.' }
+
+        Write-Host ''
+        Write-Host '  3) Ключ Tailscale (tskey-auth-...). Если ключа нет, нажми Enter: вход будет через браузер.'
         $authKey = (ReadSecret '     Ключ Tailscale').Trim()
         if ($authKey -and $authKey -notmatch '^tskey-') {
             Warn 'Это не похоже на ключ Tailscale, войдём через браузер.'
@@ -237,8 +321,8 @@ try {
         }
 
         Write-Host ''
-        Write-Host '  3) Какие папки открыть для доступа с сайта. Сейчас откроется окно выбора.'
-        Write-Host '     Выбирай только то, что действительно нужно: через сайт эти папки можно смотреть, скачивать и менять.'
+        Write-Host '  4) Какие папки открыть для доступа с сайта. Сейчас откроется окно выбора.'
+        Write-Host '     Через сайт эти папки можно смотреть, скачивать и менять: выбирай только нужное.'
         $folders = Select-Folders
         $allowed = Build-AllowedDirs $folders
     }
@@ -247,7 +331,7 @@ try {
     Say 'Проверяю Python'
     $py = Find-Python
     if (-not $py) { Warn 'Python 3.10+ не найден, устанавливаю...'; $py = Install-Python }
-    if (-not $py) { Fail 'Не получилось установить Python. Поставь его вручную с python.org (галочка "Add python.exe to PATH") и запусти install.bat ещё раз.' }
+    if (-not $py) { Fail 'Не получилось установить Python. Поставь его вручную с python.org (галочка "Add python.exe to PATH") и запусти установщик ещё раз.' }
     Ok "Python: $py"
 
     # ---- 3. код с GitHub
@@ -284,19 +368,23 @@ try {
 
     # ---- 5. настройки
     if (-not $update) {
-        $envText = (@(
+        $lines = @(
             "AGENT_TOKEN=$token",
             'AGENT_HOST=127.0.0.1',
             "AGENT_PORT=$Port",
             "ALLOWED_DIRS=$allowed",
             'SCREEN_BACKEND=mss',
             'MAX_UPLOAD_MB=2048'
-        ) -join "`r`n") + "`r`n"
-        # UTF-8 БЕЗ BOM: иначе агент не прочитает первую строку
-        [IO.File]::WriteAllText($EnvFile, $envText, (New-Object Text.UTF8Encoding($false)))
+        )
+        if ($serverUrl) { $lines += "SERVER_URL=$serverUrl" }
+        [IO.File]::WriteAllText($EnvFile, (($lines -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding($false)))
         $mySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         & icacls $EnvFile /inheritance:r /grant:r "*${mySid}:(F)" '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
         Ok 'Настройки сохранены (доступ к файлу только у тебя и администраторов)'
+    } elseif ($oneClick) {
+        Set-EnvValue $EnvFile 'AGENT_TOKEN' $token
+        Set-EnvValue $EnvFile 'SERVER_URL' $serverUrl
+        Ok 'Токен и адрес сайта обновлены, папки сохранены'
     }
 
     # ---- 6. Tailscale
@@ -306,7 +394,7 @@ try {
     Connect-Tailscale $authKey
     $ip = $null
     for ($i = 0; $i -lt 30 -and -not $ip; $i++) { $ip = Get-TsIp; if (-not $ip) { Start-Sleep 2 } }
-    if (-not $ip) { Fail 'Tailscale подключился, но адрес 100.x.x.x не появился. Подожди минуту и запусти install.bat ещё раз.' }
+    if (-not $ip) { Fail 'Tailscale подключился, но адрес 100.x.x.x не появился. Подожди минуту и запусти установщик ещё раз.' }
     Ok "Адрес этого компьютера в VPN: $ip"
 
     # ---- 7. файрвол: порт агента открыт только для адресов Tailscale
@@ -326,7 +414,7 @@ try {
     Start-ScheduledTask -TaskName $TaskName
     Ok 'Агент будет запускаться при каждом входе в Windows'
 
-    # ---- 9. проверка
+    # ---- 9. проверка, что агент отвечает
     Say 'Проверяю, что агент отвечает'
     $healthy = $false
     for ($i = 0; $i -lt 30 -and -not $healthy; $i++) {
@@ -345,25 +433,53 @@ try {
     }
     Ok 'Агент работает'
 
+    # ---- 10. сообщаем сайту адрес (сам агент тоже будет делать это раз в 5 минут)
+    $registered = $false
+    if ($serverUrl) {
+        Say 'Сообщаю сайту адрес этого компьютера'
+        $body = @{ host = $ip; port = $Port } | ConvertTo-Json -Compress
+        for ($i = 0; $i -lt 5 -and -not $registered; $i++) {
+            try {
+                Invoke-RestMethod -Method Post -Uri "$serverUrl/api/agent/register" -Headers @{ 'X-Agent-Token' = $token } `
+                    -ContentType 'application/json' -Body $body -TimeoutSec 15 -ErrorAction Stop | Out-Null
+                $registered = $true
+            } catch { Start-Sleep 3 }
+        }
+        if ($registered) { Ok 'Сайт увидел дачный компьютер' }
+        else { Warn 'Сайт пока не ответил. Агент будет пробовать сам каждую минуту.' }
+    }
+
     # ---- итог
     Write-Host ''
     Write-Host '==================== ГОТОВО ====================' -ForegroundColor Green
     Write-Host ''
-    Write-Host '  ОСТАЛСЯ ПОСЛЕДНИЙ ШАГ. Выполни эту команду на сервере (по SSH):' -ForegroundColor White
+    if ($registered) {
+        Write-Host "  Дача подключена. Открой сайт $serverUrl : вкладки «Файлы» и «Экран» уже работают." -ForegroundColor White
+    } elseif ($serverUrl) {
+        Write-Host "  Через минуту обнови сайт $serverUrl : дача должна появиться сама." -ForegroundColor White
+        Write-Host "  Если не появится, выполни на сервере (по SSH):  dacha-set-agent $ip" -ForegroundColor Yellow
+    } else {
+        Write-Host '  ОСТАЛСЯ ПОСЛЕДНИЙ ШАГ. Выполни эту команду на сервере (по SSH):' -ForegroundColor White
+        Write-Host ''
+        Write-Host "      dacha-set-agent $ip" -ForegroundColor Yellow
+    }
     Write-Host ''
-    Write-Host "      dacha-set-agent $ip" -ForegroundColor Yellow
-    Write-Host ''
-    Write-Host '  Чтобы дача сама поднималась после перезагрузки или отключения света:'
-    Write-Host '    - включи автоматический вход в Windows (Win+R, команда  netplwiz,'
-    Write-Host '      снять галочку «Требовать ввод имени и пароля»);'
-    Write-Host '    - в BIOS поставь «включаться при появлении питания» (AC Power Recovery).'
+    $autoLogon = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction SilentlyContinue).AutoAdminLogon
+    if ($autoLogon -ne '1') {
+        Write-Host '  Чтобы дача сама поднималась после перезагрузки или отключения света (один раз):' -ForegroundColor Yellow
+        Write-Host '    - включи автоматический вход в Windows: Win+R, команда  netplwiz ,'
+        Write-Host '      снять галочку «Требовать ввод имени и пароля»;'
+        Write-Host '    - в BIOS поставь «включаться при появлении питания» (AC Power Recovery).'
+    } else {
+        Write-Host '  Автоматический вход в Windows включён: дача поднимется сама после перезагрузки.'
+    }
     Write-Host '  Экран виден, пока Windows не заблокирован (на экране блокировки картинка чёрная).'
     Write-Host ''
-    Write-Host "  Обновить: запусти install.bat ещё раз. Удалить: $InstallDir\uninstall.bat"
-    Write-Host '  Старый способ удалённого доступа пока не удаляй, пока всё не проверишь.'
+    Write-Host "  Обновить: скачай установщик на сайте ещё раз. Удалить: $InstallDir\uninstall.bat"
     Write-Host ''
 }
 catch {
+    $exitCode = 1
     Write-Host ''
     Write-Host "ОШИБКА: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Подробности записаны в $InstallDir\install.log" -ForegroundColor Red
@@ -372,3 +488,4 @@ catch {
 finally {
     try { Stop-Transcript | Out-Null } catch {}
 }
+if ($MyInvocation.MyCommand.Path) { exit $exitCode }
