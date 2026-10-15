@@ -27,6 +27,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from PIL import Image, ImageDraw
 
+# Вывод в файл/консоль Windows может быть не в UTF-8: не даём русскому тексту уронить агента
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 # --------------------------------------------------------------------------- #
 # Настройки
