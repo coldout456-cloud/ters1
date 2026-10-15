@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Дача — вход</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <h1>Дача</h1>
+    <p class="muted">Удалённый доступ к компьютеру</p>
+    <form id="form">
+      <label>Логин
+        <input id="username" name="username" autocomplete="username" required autofocus>
+      </label>
+      <label>Пароль
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" class="button primary">Войти</button>
+      <p id="error" class="error" role="alert" hidden></p>
+    </form>
+  </main>
+  <script src="/static/login.js"></script>
+</body>
+</html>

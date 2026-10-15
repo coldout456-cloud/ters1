@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Дача</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      Дача
+      <span id="dot" class="dot" title="Статус компьютера"></span>
+      <span id="host" class="muted"></span>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="files">Файлы</button>
+      <button class="tab" data-tab="screen">Экран</button>
+    </nav>
+    <button id="logout" class="button ghost">Выйти</button>
+  </header>
+
+  <main>
+    <section id="tab-files">
+      <div class="toolbar">
+        <div id="crumbs" class="crumbs"></div>
+        <label id="upload-label" class="button primary">
+          Загрузить файлы
+          <input type="file" id="upload" multiple hidden>
+        </label>
+      </div>
+      <p id="upload-status" class="muted" hidden></p>
+      <p id="files-error" class="error" hidden></p>
+      <div class="table-wrap">
+        <table class="files">
+          <thead>
+            <tr><th>Имя</th><th class="num">Размер</th><th class="date">Изменён</th><th></th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-screen" hidden>
+      <div class="toolbar controls">
+        <button id="toggle" class="button primary">Старт</button>
+        <label>Кадров/с
+          <select id="fps">
+            <option>1</option><option>2</option><option selected>5</option><option>10</option><option>15</option>
+          </select>
+        </label>
+        <label>Размер
+          <select id="scale">
+            <option value="0.25">25%</option>
+            <option value="0.5" selected>50%</option>
+            <option value="0.75">75%</option>
+            <option value="1">100%</option>
+          </select>
+        </label>
+        <label>Качество
+          <select id="quality">
+            <option value="30">Низкое</option>
+            <option value="60" selected>Среднее</option>
+            <option value="85">Высокое</option>
+          </select>
+        </label>
+        <label id="monitor-label" hidden>Монитор
+          <select id="monitor"></select>
+        </label>
+        <button id="fullscreen" class="button">Во весь экран</button>
+        <a id="snap" class="button" href="#" download="screen.jpg">Снимок</a>
+      </div>
+      <div class="screen-wrap">
+        <img id="screen" alt="Экран дачного компьютера" hidden>
+        <p id="screen-hint" class="muted">Нажми «Старт», чтобы увидеть экран.</p>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
