@@ -392,10 +392,16 @@ try {
         $mySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         & icacls $EnvFile /inheritance:r /grant:r "*${mySid}:(F)" '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
         Ok 'Настройки сохранены (доступ к файлу только у тебя и администраторов)'
-    } elseif ($oneClick) {
-        Set-EnvValue $EnvFile 'AGENT_TOKEN' $token
-        Set-EnvValue $EnvFile 'SERVER_URL' $serverUrl
-        Ok 'Токен и адрес сайта обновлены, папки сохранены'
+    } else {
+        # Обновление поверх прежней установки: .env сохраняем, но дописываем новые
+        # возможности, если их там ещё нет (старые установки их не знали).
+        if ($oneClick) {
+            Set-EnvValue $EnvFile 'AGENT_TOKEN' $token
+            Set-EnvValue $EnvFile 'SERVER_URL' $serverUrl
+        }
+        if (-not (Get-EnvValue $EnvFile 'ALLOW_ALL_FILES')) { Set-EnvValue $EnvFile 'ALLOW_ALL_FILES' '1' }
+        if (-not (Get-EnvValue $EnvFile 'INPUT_ENABLED'))   { Set-EnvValue $EnvFile 'INPUT_ENABLED' '1' }
+        Ok 'Настройки обновлены (виден весь диск, управление мышью включено)'
     }
 
     # ---- 6. Tailscale
