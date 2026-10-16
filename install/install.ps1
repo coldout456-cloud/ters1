@@ -12,7 +12,9 @@ $ProgressPreference    = 'SilentlyContinue'
 
 $Repo       = 'coldout456-cloud/ters1'
 $Branch     = 'main'
-$InstallDir = 'C:\DachaAgent'
+# Папка AppData\Local скрыта в проводнике по умолчанию (нужно включить «Показывать скрытые
+# элементы»), поэтому агент здесь, а не в C:\ или на рабочем столе — заметить его случайно сложнее.
+$InstallDir = Join-Path $env:LOCALAPPDATA 'DachaAgent'
 $AgentDir   = Join-Path $InstallDir 'agent'
 $EnvFile    = Join-Path $AgentDir '.env'
 $Port       = 8765
@@ -75,7 +77,7 @@ function Test-FolderAllowed($path) {
 }
 
 # Папки по умолчанию для режима «в один клик»: стандартные папки пользователя (если они есть).
-# Изменить потом: файл C:\DachaAgent\agent\.env, строка ALLOWED_DIRS.
+# Изменить потом: файл %LOCALAPPDATA%\DachaAgent\agent\.env, строка ALLOWED_DIRS.
 function Get-DefaultFolders {
     $cands = [ordered]@{
         documents = [Environment]::GetFolderPath('MyDocuments')

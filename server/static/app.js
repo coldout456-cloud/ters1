@@ -275,6 +275,7 @@ async function loadMonitors() {
 
 async function loadSetupInfo() {
   const hintEl = $("#setup-hint");
+  const oneEl = $("#oneliner");
   try {
     const info = await (await api("/api/dacha/info")).json();
     $("#installer").classList.toggle("disabled", !info.installer_ready);
@@ -284,14 +285,35 @@ async function loadSetupInfo() {
     }
     lines.push(
       info.tailscale_key
-        ? "Ключ Tailscale вшит в установщик: вход в VPN пройдёт сам."
-        : "Ключ Tailscale не задан: во время установки откроется страница входа в Tailscale, на ней нужно будет нажать «Connect».",
+        ? "Ключ Tailscale вшит: вход в VPN пройдёт сам, без лишних окон."
+        : "Ключ Tailscale не задан: установка файлом (вторая карточка) не запустится вообще — на сервере выполни dacha-set-tskey. Установка командой в этом случае просто откроет страницу входа в Tailscale в твоём браузере.",
     );
     hintEl.textContent = lines.join(" ");
   } catch (err) {
     hintEl.textContent = err.message;
   }
+
+  try {
+    const { command } = await (await api("/api/dacha/oneliner")).json();
+    oneEl.textContent = command;
+  } catch (err) {
+    oneEl.textContent = "";
+    $("#copy-oneliner").disabled = true;
+    $("#copy-hint").textContent = err.message;
+  }
 }
+
+$("#copy-oneliner").addEventListener("click", async () => {
+  const text = $("#oneliner").textContent;
+  const hint = $("#copy-hint");
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    hint.textContent = "Скопировано. Вставь в окно PowerShell (администратор).";
+  } catch {
+    hint.textContent = "Не удалось скопировать само: выдели текст команды вручную и скопируй (Ctrl+C).";
+  }
+});
 
 // ------------------------------------------------------------------ вкладки
 

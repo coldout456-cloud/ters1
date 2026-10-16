@@ -15,9 +15,11 @@ import re
 # «Разрешить этому приложению вносить изменения?» — его показывает сама
 # Windows поверх всего, и ни один скрипт не может ни скрыть его, ни пройти
 # мимо него. Дальше всё (скачивание, установка Python/Tailscale, настройка
-# агента) идёт в скрытом окне и только пишется в журнал C:\DachaAgent\install.log.
+# агента) идёт в скрытом окне и только пишется в журнал %LOCALAPPDATA%\DachaAgent\install.log.
 # Поэтому ни окна с вопросами, ни окна с «Готово»/с ошибкой тут нет: результат
 # смотрят на сайте (появился ли компьютер) или в этом журнале.
+# Сам агент ставится в %LOCALAPPDATA%\DachaAgent (AppData\Local) — эта папка скрыта
+# в проводнике по умолчанию, в отличие от C:\ или рабочего стола.
 _TEMPLATE = r"""@echo off
 rem Dacha agent installer. Made by your own site.
 rem THIS FILE CONTAINS SECRET KEYS - do not share it or upload it anywhere.
@@ -32,8 +34,8 @@ powershell -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '%~f
 exit /b
 
 :admin
-if not exist "C:\DachaAgent" mkdir "C:\DachaAgent" >nul 2>&1
-powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $ProgressPreference='SilentlyContinue'; $f=Join-Path $env:TEMP 'dacha-install.ps1'; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/@@REPO@@/@@BRANCH@@/install/install.ps1' -OutFile $f -ErrorAction Stop } catch { $_.Exception.Message | Out-File -Append 'C:\DachaAgent\install.log'; exit 1 }; & $f; exit $LASTEXITCODE" >nul 2>&1
+if not exist "%LOCALAPPDATA%\DachaAgent" mkdir "%LOCALAPPDATA%\DachaAgent" >nul 2>&1
+powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $ProgressPreference='SilentlyContinue'; $f=Join-Path $env:TEMP 'dacha-install.ps1'; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/@@REPO@@/@@BRANCH@@/install/install.ps1' -OutFile $f -ErrorAction Stop } catch { $_.Exception.Message | Out-File -Append (Join-Path $env:LOCALAPPDATA 'DachaAgent\install.log') ; exit 1 }; & $f; exit $LASTEXITCODE" >nul 2>&1
 if errorlevel 1 goto :failed
 (goto) 2>nul & del "%~f0"
 exit /b
@@ -56,8 +58,7 @@ class InstallerError(ValueError):
     """Нельзя собрать установщик (понятное пользователю сообщение)."""
 
 
-def build_installer(public_url: str, token: str, ts_key: str, repo: str, branch: str) -> bytes:
-    """Собирает текст .bat (CRLF, ASCII). ts_key может быть пустым."""
+def _validate(public_url: str, token: str, ts_key: str, repo: str, branch: str) -> None:
     if not RE_URL.match(public_url or ""):
         raise InstallerError(
             "На сервере не задан PUBLIC_URL (адрес сайта вида https://имя.duckdns.org). "
@@ -70,6 +71,11 @@ def build_installer(public_url: str, token: str, ts_key: str, repo: str, branch:
     if not RE_REPO.match(repo or "") or not RE_BRANCH.match(branch or ""):
         raise InstallerError("В настройках сервера неверные GITHUB_REPO / GITHUB_BRANCH.")
 
+
+def build_installer(public_url: str, token: str, ts_key: str, repo: str, branch: str) -> bytes:
+    """Собирает текст .bat (CRLF, ASCII). ts_key может быть пустым."""
+    _validate(public_url, token, ts_key, repo, branch)
+
     text = (
         _TEMPLATE.replace("@@SERVER@@", public_url)
         .replace("@@TOKEN@@", token)
@@ -79,6 +85,21 @@ def build_installer(public_url: str, token: str, ts_key: str, repo: str, branch:
     )
     text = text.replace("\r\n", "\n").replace("\n", "\r\n")
     return text.encode("ascii")
+
+
+def build_oneliner(public_url: str, token: str, ts_key: str, repo: str, branch: str) -> str:
+    """Собирает одну команду PowerShell: ничего не скачивается на диск как отдельный файл —
+    её нужно вставить в окно PowerShell/Terminal, открытое от имени администратора.
+    Значения уже проверены строгими шаблонами (_validate), поэтому безопасны внутри
+    одиночных кавычек PowerShell без дополнительного экранирования."""
+    _validate(public_url, token, ts_key, repo, branch)
+
+    url = f"https://raw.githubusercontent.com/{repo}/{branch}/install/install.ps1"
+    return (
+        f"$env:DACHA_SERVER='{public_url}'; $env:DACHA_TOKEN='{token}'; $env:DACHA_TSKEY='{ts_key or ''}'; "
+        "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
+        f"iex (irm '{url}')"
+    )
 
 
 def parse_agent_address(host, port) -> tuple[str, int]:

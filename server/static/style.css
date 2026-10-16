@@ -147,6 +147,10 @@ table.files a { color: var(--accent); text-decoration: none; }
 .steps { padding-left: 20px; line-height: 1.8; }
 .warn { color: var(--danger); font-size: 14px; }
 code { padding: 1px 6px; border-radius: 6px; background: var(--bg); font-size: 13px; }
+.codebox {
+  display: block; padding: 10px 12px; border-radius: 8px; background: var(--bg);
+  font-size: 13px; white-space: pre-wrap; word-break: break-all; user-select: all;
+}
 
 /* вход */
 .login-body { display: grid; place-items: center; min-height: 100vh; padding: 20px; }

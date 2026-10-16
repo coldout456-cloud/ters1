@@ -18,12 +18,12 @@ import anyio
 import httpx
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.datastructures import MutableHeaders
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.staticfiles import StaticFiles
 
-from dacha_installer import InstallerError, build_installer, parse_agent_address
+from dacha_installer import InstallerError, build_installer, build_oneliner, parse_agent_address
 from security import verify_password
 
 BASE = Path(__file__).parent
@@ -273,6 +273,16 @@ async def dacha_installer():
         media_type="application/octet-stream",
         headers={"Content-Disposition": 'attachment; filename="dacha-install.bat"', "Cache-Control": "no-store"},
     )
+
+
+@app.get("/api/dacha/oneliner", dependencies=[Depends(require_user)])
+async def dacha_oneliner():
+    """Та же установка одной командой PowerShell — без файла, который остаётся на диске."""
+    try:
+        cmd = build_oneliner(PUBLIC_URL, AGENT_TOKEN, TAILSCALE_AUTHKEY, GITHUB_REPO, GITHUB_BRANCH)
+    except InstallerError as e:
+        raise HTTPException(503, str(e))
+    return JSONResponse({"command": cmd}, headers={"Cache-Control": "no-store"})
 
 
 # --------------------------------------------------------------------------- #
