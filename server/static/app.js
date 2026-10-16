@@ -224,6 +224,7 @@ function startStream() {
 
 function stopStream() {
   streaming = false;
+  if (typeof setControl === "function") setControl(false); // без картинки управлять нечем
   screenImg.src = BLANK_GIF; // обрывает соединение
   screenImg.hidden = true;
   hint.hidden = false;
@@ -247,6 +248,88 @@ $("#toggle").addEventListener("click", () => (streaming ? stopStream() : startSt
 for (const id of ["fps", "quality", "scale", "monitor"]) {
   $("#" + id).addEventListener("change", () => streaming && startStream());
 }
+
+// ------------------------------------------------------------------ управление мышью
+
+let controlling = false;
+
+function setControl(on) {
+  controlling = on;
+  screenImg.classList.toggle("controllable", on);
+  $("#control").setAttribute("aria-pressed", String(on));
+  $("#control").textContent = "Управление: " + (on ? "вкл" : "выкл");
+  $("#control-hint").hidden = !on;
+}
+
+$("#control").addEventListener("click", () => setControl(!controlling));
+
+// Доля 0..1 по картинке с учётом «вписывания» (object-fit: contain во весь экран).
+function normFromEvent(e) {
+  const rect = screenImg.getBoundingClientRect();
+  const nw = screenImg.naturalWidth || rect.width;
+  const nh = screenImg.naturalHeight || rect.height;
+  if (!rect.width || !rect.height || !nw || !nh) return null;
+  const scale = Math.min(rect.width / nw, rect.height / nh);
+  const dispW = nw * scale;
+  const dispH = nh * scale;
+  const offX = rect.left + (rect.width - dispW) / 2;
+  const offY = rect.top + (rect.height - dispH) / 2;
+  const x = (e.clientX - offX) / dispW;
+  const y = (e.clientY - offY) / dispH;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return { x, y };
+}
+
+async function sendInput(action, extra) {
+  const pt = extra.point;
+  const payload = { monitor: Number($("#monitor").value || "1"), ...extra };
+  delete payload.point;
+  if (pt) {
+    payload.x = pt.x;
+    payload.y = pt.y;
+  }
+  try {
+    await api("/api/input/" + action, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    setControl(false);
+    hint.hidden = false;
+    hint.textContent = "Управление: " + err.message;
+  }
+}
+
+screenImg.addEventListener("click", (e) => {
+  if (!controlling) return;
+  const pt = normFromEvent(e);
+  if (pt) sendInput("click", { point: pt, button: "left" });
+});
+
+screenImg.addEventListener("dblclick", (e) => {
+  if (!controlling) return;
+  const pt = normFromEvent(e);
+  if (pt) sendInput("click", { point: pt, button: "left", double: true });
+});
+
+screenImg.addEventListener("contextmenu", (e) => {
+  if (!controlling) return;
+  e.preventDefault();
+  const pt = normFromEvent(e);
+  if (pt) sendInput("click", { point: pt, button: "right" });
+});
+
+screenImg.addEventListener(
+  "wheel",
+  (e) => {
+    if (!controlling) return;
+    e.preventDefault();
+    const pt = normFromEvent(e);
+    if (pt) sendInput("scroll", { point: pt, dy: e.deltaY > 0 ? -2 : 2 });
+  },
+  { passive: false },
+);
 $("#fullscreen").addEventListener("click", () => screenImg.requestFullscreen?.());
 $("#snap").addEventListener("click", () => {
   $("#snap").href = "/api/screen/snapshot?" + screenParams();
@@ -312,6 +395,21 @@ $("#copy-oneliner").addEventListener("click", async () => {
     hint.textContent = "Скопировано. Вставь в окно PowerShell (администратор).";
   } catch {
     hint.textContent = "Не удалось скопировать само: выдели текст команды вручную и скопируй (Ctrl+C).";
+  }
+});
+
+$("#self-destruct").addEventListener("click", async () => {
+  const dh = $("#destruct-hint");
+  if (!confirm("Удалить агент с дачного компьютера? Это необратимо.")) return;
+  if (!confirm("Точно удалить? Чтобы вернуть доступ, придётся устанавливать заново.")) return;
+  $("#self-destruct").disabled = true;
+  dh.textContent = "Отправляю команду на удаление…";
+  try {
+    await api("/api/dacha/self-destruct", { method: "POST" });
+    dh.textContent = "Готово: агент удаляет себя. Через минуту дача пропадёт из статуса — это нормально.";
+  } catch (err) {
+    dh.textContent = "Не вышло: " + err.message;
+    $("#self-destruct").disabled = false;
   }
 });
 

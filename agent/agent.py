@@ -56,6 +56,10 @@ def load_env(path: Path) -> None:
 
 load_env(Path(__file__).with_name(".env"))
 
+def _flag(name: str, default: str = "") -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
 TOKEN = os.environ.get("AGENT_TOKEN", "")
 HOST = os.environ.get("AGENT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("AGENT_PORT", "8765"))
@@ -63,6 +67,9 @@ SCREEN_BACKEND = os.environ.get("SCREEN_BACKEND", "mss")  # mss | test
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "2048"))
 MAX_STREAMS = 3
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip("/")  # адрес сайта: сюда агент сообщает свой адрес
+ALLOW_ALL_FILES = _flag("ALLOW_ALL_FILES")  # True — виден весь диск, а не только папки из ALLOWED_DIRS
+INPUT_ENABLED = _flag("INPUT_ENABLED", "1")  # управление мышью (по умолчанию включено)
+INSTALL_DIR = Path(__file__).resolve().parent.parent  # ...\DachaAgent (в ней лежит uninstall.ps1)
 
 
 def parse_roots(raw: str) -> dict[str, Path]:
@@ -122,6 +129,56 @@ def resolve_path(vpath: str) -> Path:
     return target
 
 
+def list_drives() -> list[str]:
+    """Буквы дисков Windows: ['C:', 'D:']. На прочих ОС — корень '/'."""
+    if os.name != "nt":
+        return ["/"]
+    import string
+
+    drives = []
+    try:
+        from ctypes import windll  # type: ignore
+
+        bitmask = windll.kernel32.GetLogicalDrives()
+        for i, letter in enumerate(string.ascii_uppercase):
+            if bitmask & (1 << i):
+                drives.append(f"{letter}:")
+    except Exception:
+        for letter in string.ascii_uppercase:
+            if os.path.exists(f"{letter}:\\"):
+                drives.append(f"{letter}:")
+    return drives
+
+
+def resolve_any(vpath: str) -> Path:
+    """Режим «весь диск»: 'C:/Users/Me/файл' -> реальный путь. Разрешён только
+    абсолютный путь на локальном диске (UNC-пути \\\\сервер\\шара отклоняются)."""
+    vpath = vpath.replace("\\", "/").strip("/")
+    if not vpath:
+        raise HTTPException(400, "Пустой путь")
+    if os.name == "nt":
+        first, _, rest = vpath.partition("/")
+        if not re.fullmatch(r"[A-Za-z]:", first):
+            raise HTTPException(400, "Путь должен начинаться с диска, например C:/Users")
+        raw = first + "\\" + rest.replace("/", "\\") if rest else first + "\\"
+        try:
+            target = Path(raw).resolve()
+        except (OSError, ValueError):
+            raise HTTPException(400, "Некорректный путь")
+        if not re.fullmatch(r"[A-Za-z]:", target.drive):  # отсекаем UNC и прочее
+            raise HTTPException(403, "Недопустимый путь")
+        return target
+    try:
+        return Path("/" + vpath).resolve()
+    except (OSError, ValueError):
+        raise HTTPException(400, "Некорректный путь")
+
+
+def resolve(vpath: str) -> Path:
+    """Выбирает способ в зависимости от режима доступа."""
+    return resolve_any(vpath) if ALLOW_ALL_FILES else resolve_path(vpath)
+
+
 _INVALID_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
@@ -148,6 +205,8 @@ def health():
         "ok": True,
         "hostname": socket.gethostname(),
         "roots": list(ROOTS),
+        "all_files": ALLOW_ALL_FILES,
+        "input": INPUT_ENABLED,
         "screen": SCREEN_BACKEND,
         "time": time.time(),
     }
@@ -160,11 +219,12 @@ def health():
 @app.get("/files/list")
 def files_list(path: str = ""):
     if not path.strip("/\\ "):
+        names = list_drives() if ALLOW_ALL_FILES else list(ROOTS)
         return {
             "path": "",
-            "entries": [{"name": a, "is_dir": True, "size": None, "mtime": None} for a in ROOTS],
+            "entries": [{"name": a, "is_dir": True, "size": None, "mtime": None} for a in names],
         }
-    target = resolve_path(path)
+    target = resolve(path)
     if not target.is_dir():
         raise HTTPException(400, "Это не папка")
     entries = []
@@ -190,7 +250,7 @@ def files_list(path: str = ""):
 
 @app.get("/files/download")
 def files_download(path: str):
-    target = resolve_path(path)
+    target = resolve(path)
     if not target.is_file():
         raise HTTPException(404, "Файл не найден")
     # Всегда «скачать», никогда не открывать в браузере: так HTML-файл из
@@ -207,7 +267,7 @@ def files_download(path: str):
 async def files_upload(request: Request, path: str, name: str, overwrite: bool = False):
     """Тело запроса — сырые байты файла (без multipart)."""
     validate_name(name)
-    dest = resolve_path(f"{path.strip('/')}/{name}")
+    dest = resolve(f"{path.strip('/')}/{name}")
     folder = dest.parent
     if not folder.is_dir():
         raise HTTPException(400, "Папка не найдена")
@@ -385,6 +445,122 @@ async def screen_stream(fps: float = 5, quality: int = 60, scale: float = 0.5, m
 
 
 # --------------------------------------------------------------------------- #
+# Управление мышью
+# --------------------------------------------------------------------------- #
+
+_mouse = None          # (Controller, Button) — создаётся один раз при первом запросе
+_mouse_error = ""      # если pynput недоступен, запоминаем причину и больше не пытаемся
+
+
+def mouse_controller():
+    global _mouse, _mouse_error
+    if _mouse is not None:
+        return _mouse
+    if _mouse_error:
+        raise HTTPException(503, _mouse_error)
+    try:
+        from pynput.mouse import Button, Controller
+
+        _mouse = (Controller(), Button)
+        return _mouse
+    except Exception as e:  # библиотека не установлена, нет сессии рабочего стола и т.п.
+        _mouse_error = f"Управление мышью недоступно: {e}"
+        raise HTTPException(503, _mouse_error)
+
+
+def monitor_rect(monitor: int) -> dict:
+    """Границы монитора в координатах виртуального рабочего стола (left/top/width/height)."""
+    if SCREEN_BACKEND == "test":
+        return {"left": 0, "top": 0, "width": 1280, "height": 720}
+    import mss
+
+    with mss.mss() as sct:
+        if monitor < 1 or monitor >= len(sct.monitors):
+            raise HTTPException(400, "Нет такого монитора")
+        m = sct.monitors[monitor]
+        return {"left": m["left"], "top": m["top"], "width": m["width"], "height": m["height"]}
+
+
+def point_from_norm(nx: float, ny: float, monitor: int) -> tuple[int, int]:
+    """Доля 0..1 по выбранному монитору -> абсолютная точка на рабочем столе."""
+    r = monitor_rect(monitor)
+    x = int(round(r["left"] + _clamp(nx, 0.0, 1.0) * (r["width"] - 1)))
+    y = int(round(r["top"] + _clamp(ny, 0.0, 1.0) * (r["height"] - 1)))
+    return x, y
+
+
+async def _input_body(request: Request) -> dict:
+    if not INPUT_ENABLED:
+        raise HTTPException(403, "Управление мышью отключено")
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "Нужен JSON")
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Нужен объект JSON")
+    return data
+
+
+@app.post("/input/move")
+async def input_move(request: Request):
+    d = await _input_body(request)
+    ctl, _ = mouse_controller()
+    ctl.position = point_from_norm(float(d.get("x", 0)), float(d.get("y", 0)), int(d.get("monitor", 1)))
+    return {"ok": True}
+
+
+@app.post("/input/click")
+async def input_click(request: Request):
+    d = await _input_body(request)
+    ctl, Button = mouse_controller()
+    buttons = {"left": Button.left, "right": Button.right, "middle": Button.middle}
+    btn = buttons.get(str(d.get("button", "left")), Button.left)
+    count = 2 if d.get("double") else 1
+    ctl.position = point_from_norm(float(d.get("x", 0)), float(d.get("y", 0)), int(d.get("monitor", 1)))
+    ctl.click(btn, count)
+    return {"ok": True}
+
+
+@app.post("/input/scroll")
+async def input_scroll(request: Request):
+    d = await _input_body(request)
+    ctl, _ = mouse_controller()
+    ctl.position = point_from_norm(float(d.get("x", 0)), float(d.get("y", 0)), int(d.get("monitor", 1)))
+    dy = int(_clamp(float(d.get("dy", 0)), -10, 10))
+    dx = int(_clamp(float(d.get("dx", 0)), -10, 10))
+    ctl.scroll(dx, dy)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Самоуничтожение: удалить агента с компьютера по кнопке с сайта
+# --------------------------------------------------------------------------- #
+
+@app.post("/self-destruct")
+def self_destruct():
+    """Запускает uninstall.ps1 в отдельном процессе и выходит. Скрипт снимает
+    автозапуск и правило брандмауэра (если хватает прав), завершает агента и
+    удаляет всю папку установки."""
+    uninstall = INSTALL_DIR / "uninstall.ps1"
+    if os.name != "nt" or not uninstall.exists():
+        raise HTTPException(503, "Самоуничтожение доступно только на установленной копии (Windows)")
+    import subprocess
+
+    DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+             "-File", str(uninstall), "-Yes"],
+            cwd=str(INSTALL_DIR), creationflags=DETACHED, close_fds=True,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Не удалось запустить удаление: {e}")
+    # Даём ответу уйти на сайт, затем выходим — uninstall.ps1 подождёт пару секунд и доделает остальное.
+    threading.Timer(1.5, lambda: os._exit(0)).start()
+    return {"ok": True, "message": "Агент удаляется с компьютера"}
+
+
+# --------------------------------------------------------------------------- #
 
 def register_once(server_url: str, token: str, host: str, port: int, timeout: float = 10.0) -> bool:
     """Сообщает сайту адрес агента (внутри VPN). True, если сайт принял."""
@@ -415,9 +591,10 @@ def main() -> None:
             "AGENT_TOKEN не задан или короче 24 символов.\n"
             'Сгенерируй: python -c "import secrets; print(secrets.token_urlsafe(32))"'
         )
-    if not ROOTS:
+    if not ROOTS and not ALLOW_ALL_FILES:
         sys.exit("ALLOWED_DIRS не задан. Пример: ALLOWED_DIRS=docs=C:\\Users\\Me\\Documents")
-    print(f"Агент слушает {HOST}:{PORT}, папки: {', '.join(ROOTS)}, экран: {SCREEN_BACKEND}")
+    where = "весь диск" if ALLOW_ALL_FILES else ", ".join(ROOTS)
+    print(f"Агент слушает {HOST}:{PORT}, файлы: {where}, мышь: {INPUT_ENABLED}, экран: {SCREEN_BACKEND}")
     if SERVER_URL and not HOST.startswith("127."):
         threading.Thread(target=_register_loop, daemon=True).start()
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")

@@ -416,6 +416,25 @@ async def files_upload(request: Request, path: str, name: str, overwrite: bool =
     return r.json()
 
 
+@app.post("/api/input/{action}", dependencies=[Depends(require_user)])
+async def input_proxy(action: str, request: Request):
+    if action not in {"move", "click", "scroll"}:
+        raise HTTPException(404, "Нет такого действия")
+    body = await request.body()
+    if len(body) > 4096:
+        raise HTTPException(413, "Слишком большой запрос")
+    r = await agent_json(
+        "POST", f"/input/{action}", content=body,
+        headers={"content-type": "application/json"}, timeout=10.0,
+    )
+    return r.json()
+
+
+@app.post("/api/dacha/self-destruct", dependencies=[Depends(require_user)])
+async def self_destruct_proxy():
+    return (await agent_json("POST", "/self-destruct", timeout=10.0)).json()
+
+
 @app.get("/api/screen/monitors", dependencies=[Depends(require_user)])
 async def screen_monitors():
     return (await agent_json("GET", "/screen/monitors")).json()

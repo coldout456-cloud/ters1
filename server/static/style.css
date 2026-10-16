@@ -133,6 +133,10 @@ table.files a { color: var(--accent); text-decoration: none; }
   border-radius: 10px;
 }
 #screen { max-width: 100%; height: auto; border-radius: 6px; }
+#screen.controllable { cursor: crosshair; }
+.button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.button.danger:hover { opacity: 0.9; border-color: var(--danger); }
+.danger-card { border-color: var(--danger); }
 #screen:fullscreen { background: #000; object-fit: contain; width: 100vw; height: 100vh; }
 
 /* установка */

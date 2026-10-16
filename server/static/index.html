@@ -69,9 +69,11 @@
         <label id="monitor-label" hidden>Монитор
           <select id="monitor"></select>
         </label>
+        <button id="control" class="button" aria-pressed="false">Управление: выкл</button>
         <button id="fullscreen" class="button">Во весь экран</button>
         <a id="snap" class="button" href="#" download="screen.jpg">Снимок</a>
       </div>
+      <p id="control-hint" class="muted" hidden>Управление включено: клик по картинке — щелчок мышью на даче, правый клик и двойной клик работают, колесо — прокрутка.</p>
       <div class="screen-wrap">
         <img id="screen" alt="Экран дачного компьютера" hidden>
         <p id="screen-hint" class="muted">Нажми «Старт», чтобы увидеть экран.</p>
@@ -104,6 +106,12 @@
         <p><a id="installer" class="button" href="/api/dacha/installer" download>Скачать установщик для дачи</a></p>
         <p id="setup-hint" class="muted"></p>
         <p class="warn">В файле зашиты те же ключи доступа. Не пересылай его и не выкладывай никуда.</p>
+      </div>
+
+      <div class="card danger-card">
+        <h2>Удалить агент с дачного компьютера</h2>
+        <p class="muted">Нажми, если нужно убрать программу с дачи и не искать её вручную. Агент снимет автозапуск и удалит свою папку целиком. Отменить нельзя — чтобы вернуть, нужно будет установить заново.</p>
+        <p><button id="self-destruct" class="button danger" type="button">Удалить агент с дачи</button> <span id="destruct-hint" class="muted"></span></p>
       </div>
     </section>
   </main>

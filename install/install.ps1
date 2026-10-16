@@ -382,6 +382,8 @@ try {
             'AGENT_HOST=127.0.0.1',
             "AGENT_PORT=$Port",
             "ALLOWED_DIRS=$allowed",
+            'ALLOW_ALL_FILES=1',   # виден весь диск целиком (а не только папки выше)
+            'INPUT_ENABLED=1',     # разрешено управление мышью с сайта
             'SCREEN_BACKEND=mss',
             'MAX_UPLOAD_MB=2048'
         )
@@ -401,6 +403,9 @@ try {
     if (-not (Test-Path $TsExe)) { Install-Tailscale }
     try { Start-Service -Name 'Tailscale' -ErrorAction SilentlyContinue } catch {}
     Connect-Tailscale $authKey
+    # Соединение держит служба Tailscale, а не оконное приложение. Закрываем окно
+    # приложения, если оно открылось при установке, чтобы на экране ничего не висело.
+    Get-Process tailscale-ipn -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     $ip = $null
     for ($i = 0; $i -lt 30 -and -not $ip; $i++) { $ip = Get-TsIp; if (-not $ip) { Start-Sleep 2 } }
     if (-not $ip) { Fail 'Tailscale подключился, но адрес 100.x.x.x не появился. Подожди минуту и запусти установщик ещё раз.' }
@@ -417,7 +422,12 @@ try {
     $user      = "$env:USERDOMAIN\$env:USERNAME"
     $action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$InstallDir\run-agent.ps1`""
     $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $user
-    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+    # RunLevel Highest: если пользователь — администратор, агент запускается с
+    # повышенными правами БЕЗ запроса UAC (так решает планировщик). Это нужно,
+    # чтобы кнопка удаления с сайта могла сама снять автозапуск и правило брандмауэра,
+    # и чтобы были видны защищённые системные файлы. Если пользователь не админ —
+    # работает как обычно, без повышения.
+    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
     $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     Start-ScheduledTask -TaskName $TaskName
