@@ -18,6 +18,9 @@
       <label>Пароль
         <input id="password" name="password" type="password" autocomplete="current-password" required>
       </label>
+      <label id="code-label" hidden>Код из приложения
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\d{6}">
+      </label>
       <button type="submit" class="button primary">Войти</button>
       <p id="error" class="error" role="alert" hidden></p>
     </form>

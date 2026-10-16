@@ -274,6 +274,7 @@ try {
     $envServer = "$env:DACHA_SERVER".Trim()
     $envToken  = "$env:DACHA_TOKEN".Trim()
     $envTsKey  = "$env:DACHA_TSKEY".Trim()
+    $envDevName = "$env:DACHA_DEVICE_NAME".Trim()  # необязательно: как компьютер назовётся на сайте
     $oneClick  = ($envServer -match '^https://[A-Za-z0-9.\-]+(:\d+)?$') -and ($envToken -match '^[A-Za-z0-9_\-]{24,}$')
 
     $update     = Test-Path $EnvFile
@@ -387,11 +388,13 @@ try {
             "AGENT_PORT=$Port",
             "ALLOWED_DIRS=$allowed",
             'ALLOW_ALL_FILES=1',   # виден весь диск целиком (а не только папки выше)
-            'INPUT_ENABLED=1',     # разрешено управление мышью с сайта
+            'INPUT_ENABLED=1',     # разрешено управление мышью и клавиатурой с сайта
+            'CAMERA_ENABLED=0',    # камера — личная вещь, по умолчанию выключена; включить вручную здесь
             'SCREEN_BACKEND=mss',
             'MAX_UPLOAD_MB=2048'
         )
-        if ($serverUrl) { $lines += "SERVER_URL=$serverUrl" }
+        if ($serverUrl)  { $lines += "SERVER_URL=$serverUrl" }
+        if ($envDevName) { $lines += "DEVICE_NAME=$envDevName" }
         [IO.File]::WriteAllText($EnvFile, (($lines -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding($false)))
         $mySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         & icacls $EnvFile /inheritance:r /grant:r "*${mySid}:(F)" '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' | Out-Null
@@ -402,10 +405,13 @@ try {
         if ($oneClick) {
             Set-EnvValue $EnvFile 'AGENT_TOKEN' $token
             Set-EnvValue $EnvFile 'SERVER_URL' $serverUrl
+            # Имя компьютера не перезаписываем, если его уже задали вручную через сайт (там оно главнее).
+            if ($envDevName -and -not (Get-EnvValue $EnvFile 'DEVICE_NAME')) { Set-EnvValue $EnvFile 'DEVICE_NAME' $envDevName }
         }
         if (-not (Get-EnvValue $EnvFile 'ALLOW_ALL_FILES')) { Set-EnvValue $EnvFile 'ALLOW_ALL_FILES' '1' }
         if (-not (Get-EnvValue $EnvFile 'INPUT_ENABLED'))   { Set-EnvValue $EnvFile 'INPUT_ENABLED' '1' }
-        Ok 'Настройки обновлены (виден весь диск, управление мышью включено)'
+        if (-not (Get-EnvValue $EnvFile 'CAMERA_ENABLED'))  { Set-EnvValue $EnvFile 'CAMERA_ENABLED' '0' }
+        Ok 'Настройки обновлены (виден весь диск, управление мышью и клавиатурой включено)'
     }
 
     # ---- 6. Tailscale
@@ -483,9 +489,9 @@ try {
     Write-Host '==================== ГОТОВО ====================' -ForegroundColor Green
     Write-Host ''
     if ($registered) {
-        Write-Host "  Дача подключена. Открой сайт $serverUrl : вкладки «Файлы» и «Экран» уже работают." -ForegroundColor White
+        Write-Host "  Компьютер подключён. Открой сайт $serverUrl и выбери его в переключателе вверху — вкладки «Файлы» и «Экран» уже работают." -ForegroundColor White
     } elseif ($serverUrl) {
-        Write-Host "  Через минуту обнови сайт $serverUrl : дача должна появиться сама." -ForegroundColor White
+        Write-Host "  Через минуту обнови сайт $serverUrl : компьютер должен появиться в переключателе сам." -ForegroundColor White
         Write-Host "  Если не появится, выполни на сервере (по SSH):  dacha-set-agent $ip" -ForegroundColor Yellow
     } else {
         Write-Host '  ОСТАЛСЯ ПОСЛЕДНИЙ ШАГ. Выполни эту команду на сервере (по SSH):' -ForegroundColor White

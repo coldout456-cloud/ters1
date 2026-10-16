@@ -182,22 +182,56 @@ UNIT
   fi
   ok "Сервер работает на 127.0.0.1:$PORT"
 
-  # Помощник: после установки агента на даче одной командой указать его адрес
+  # Помощник: сайт поддерживает несколько компьютеров сразу (каждый агент сам
+  # сообщает о себе через device_id). Это — ручной запасной вариант на случай,
+  # если какой-то компьютер почему-то не смог зарегистрироваться сам.
   cat >/usr/local/bin/dacha-set-agent <<'HELPER'
 #!/usr/bin/env bash
-# Использование: dacha-set-agent 100.x.y.z   (адрес дачи в Tailscale)
+# Использование: dacha-set-agent 100.x.y.z [имя]   (адрес компьютера в Tailscale; имя — необязательно)
 set -euo pipefail
 ip="${1:-}"
-[[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { echo "Использование: dacha-set-agent 100.x.y.z"; exit 1; }
-f=/opt/dacha/app/server/.env
-sed -i "s|^AGENT_URL=.*|AGENT_URL=http://$ip:8765|" "$f"
-rm -f /opt/dacha/app/server/agent_state.json   # забыть адрес, который агент сообщал сам
-chown dacha:dacha "$f"
-chmod 600 "$f"
+name="${2:-Компьютер}"
+[[ "$ip" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}$ ]] \
+  || { echo "Использование: dacha-set-agent 100.x.y.z [имя]  (адрес должен быть из сети Tailscale, 100.64-127.x.x)"; exit 1; }
+/opt/dacha/app/server/.venv/bin/python3 - "$ip" "$name" <<'PY'
+import json, sys, time, pathlib
+ip, name = sys.argv[1], sys.argv[2]
+f = pathlib.Path("/opt/dacha/app/server/agent_state.json")
+data = {}
+try:
+    data = json.loads(f.read_text())
+except Exception:
+    pass
+devices = data.get("devices")
+if not isinstance(devices, dict):
+    devices = {}
+devices["manual"] = {"name": name, "name_is_custom": True, "url": f"http://{ip}:8765", "updated": time.time()}
+f.write_text(json.dumps({"devices": devices}))
+PY
+chown dacha:dacha /opt/dacha/app/server/agent_state.json
 systemctl restart dacha
-echo "Готово: сервер теперь обращается к агенту по адресу $ip"
+echo "Готово: сервер теперь обращается к $ip как к «$name»"
 HELPER
   chmod +x /usr/local/bin/dacha-set-agent
+
+  # Помощник: список известных компьютеров (для диагностики по SSH)
+  cat >/usr/local/bin/dacha-list-devices <<'HELPER3'
+#!/usr/bin/env bash
+set -euo pipefail
+/opt/dacha/app/server/.venv/bin/python3 - <<'PY'
+import json, pathlib
+f = pathlib.Path("/opt/dacha/app/server/agent_state.json")
+try:
+    devices = json.loads(f.read_text()).get("devices", {})
+except Exception:
+    devices = {}
+if not devices:
+    print("Компьютеров пока нет (ни один агент ещё не зарегистрировался).")
+for did, d in devices.items():
+    print(f"{did}: {d.get('name')} -> {d.get('url')}")
+PY
+HELPER3
+  chmod +x /usr/local/bin/dacha-list-devices
 
   # Помощник: сохранить ключ Tailscale, чтобы установщик для дачи входил в VPN сам
   cat >/usr/local/bin/dacha-set-tskey <<'HELPER2'
@@ -223,6 +257,38 @@ systemctl restart dacha
 echo "Готово: ключ сохранён, установщик для дачи теперь вшивает его."
 HELPER2
   chmod +x /usr/local/bin/dacha-set-tskey
+
+  # Помощник: двухфакторная проверка (TOTP) при входе на сайт
+  cat >/usr/local/bin/dacha-set-2fa <<'HELPER4'
+#!/usr/bin/env bash
+# dacha-set-2fa          — включить 2FA, сгенерировать новый ключ
+# dacha-set-2fa off      — выключить (ключ не стирается, можно включить снова той же командой без "off")
+set -euo pipefail
+f=/opt/dacha/app/server/.env
+set_env() {
+  if grep -q "^${1}=" "$f"; then sed -i "s|^${1}=.*|${1}=${2}|" "$f"
+  else [ -z "$(tail -c1 "$f")" ] || echo >>"$f"; echo "${1}=${2}" >>"$f"; fi
+}
+if [ "${1:-}" = "off" ]; then
+  set_env TOTP_ENABLED 0
+  chown dacha:dacha "$f"; chmod 600 "$f"
+  systemctl restart dacha
+  echo "Готово: вход по коду выключен (ключ сохранён — включить снова: dacha-set-2fa)"
+  exit 0
+fi
+secret="$(/opt/dacha/app/server/.venv/bin/python3 -c "import secrets, base64; print(base64.b32encode(secrets.token_bytes(20)).decode().rstrip('='))")"
+set_env TOTP_SECRET "$secret"
+set_env TOTP_ENABLED 1
+chown dacha:dacha "$f"; chmod 600 "$f"
+systemctl restart dacha
+echo ""
+echo "Готово. Добавь в приложение-аутентификатор (Google Authenticator, Authy и т.п.) вручную:"
+echo "  Ключ:   $secret"
+echo "  Издатель: Dacha   Аккаунт: admin   Тип: по времени (TOTP), 6 цифр, 30 секунд"
+echo ""
+echo "С следующего входа на сайт понадобится код из приложения. Выключить: dacha-set-2fa off"
+HELPER4
+  chmod +x /usr/local/bin/dacha-set-2fa
 
   # ---------------------------------------------------------------- 7. Caddy (HTTPS)
   say "Настраиваю HTTPS (Caddy)"
@@ -294,14 +360,19 @@ CADDY
   printf '\n\033[1;32m================ ГОТОВО ================\033[0m\n'
   echo "Сайт:   https://$DOMAIN   (логин: admin, пароль — тот, что ты придумал)"
   echo
-  echo "Установка на дачу — в один клик, ничего вводить не нужно:"
-  echo "  1. На дачном компьютере открой https://$DOMAIN и войди."
-  echo "  2. Вкладка «Установка» -> «Скачать установщик для дачи»."
+  echo "Установка — в один клик, ничего вводить не нужно, и так можно добавить сколько угодно"
+  echo "компьютеров (каждый появится на сайте отдельной записью в переключателе):"
+  echo "  1. На нужном компьютере открой https://$DOMAIN и войди."
+  echo "  2. Вкладка «Установка» -> при желании впиши имя этого компьютера -> «Скачать установщик»."
   echo "  3. Запусти скачанный файл двойным кликом и нажми «Да»."
   echo
-  echo "Необязательно, но так на даче вообще не придётся входить в Tailscale вручную:"
+  echo "Необязательно, но так вообще не придётся входить в Tailscale вручную на новом компьютере:"
   echo "  создай в панели Tailscale ключ (Settings -> Keys -> Generate auth key, галочка Reusable)"
   echo "  и выполни здесь команду:  dacha-set-tskey"
+  echo
+  echo "Другие полезные команды (по SSH, на этом сервере):"
+  echo "  dacha-list-devices   — список всех известных компьютеров"
+  echo "  dacha-set-2fa        — включить вход по коду из приложения-аутентификатора (2FA)"
 }
 
 main "$@"

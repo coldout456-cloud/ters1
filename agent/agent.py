@@ -22,6 +22,8 @@ import sys
 import threading
 import time
 import urllib.request
+import uuid
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -36,6 +38,10 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+# mss предупреждает про mss.mss() как про устаревший способ на каждом захвате кадра —
+# это просто шум в журнале (agent.out.log), поведение библиотеки от этого не меняется.
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"mss.*")
 
 
 # --------------------------------------------------------------------------- #
@@ -68,8 +74,36 @@ MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "2048"))
 MAX_STREAMS = 3
 SERVER_URL = os.environ.get("SERVER_URL", "").rstrip("/")  # адрес сайта: сюда агент сообщает свой адрес
 ALLOW_ALL_FILES = _flag("ALLOW_ALL_FILES")  # True — виден весь диск, а не только папки из ALLOWED_DIRS
-INPUT_ENABLED = _flag("INPUT_ENABLED", "1")  # управление мышью (по умолчанию включено)
-INSTALL_DIR = Path(__file__).resolve().parent.parent  # ...\DachaAgent (в ней лежит uninstall.ps1)
+INPUT_ENABLED = _flag("INPUT_ENABLED", "1")  # управление мышью и клавиатурой (по умолчанию включено)
+CAMERA_ENABLED = _flag("CAMERA_ENABLED")  # камера — личная вещь, по умолчанию выключена
+INSTALL_DIR = Path(os.environ.get("DACHA_INSTALL_DIR") or Path(__file__).resolve().parent.parent)  # ...\DachaAgent
+
+
+# --------------------------------------------------------------------------- #
+# Личность компьютера: нужна, чтобы сайт мог отличать несколько даных агентов
+# друг от друга (несколько компьютеров под одним аккаунтом на сайте).
+# --------------------------------------------------------------------------- #
+
+def load_or_create_device_id() -> str:
+    """Один и тот же id на все перезапуски/переустановки поверх. Пропадает,
+    только если удалить всю папку INSTALL_DIR (в том числе по кнопке удаления)."""
+    path = INSTALL_DIR / "device_id"
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if re.fullmatch(r"[a-f0-9]{32}", existing):
+            return existing
+    except Exception:
+        pass
+    new_id = uuid.uuid4().hex
+    try:
+        path.write_text(new_id, encoding="utf-8")
+    except Exception:
+        pass  # не страшно: в следующий раз просто сгенерируем новый
+    return new_id
+
+
+DEVICE_ID = load_or_create_device_id()
+DEVICE_NAME = os.environ.get("DEVICE_NAME", "").strip() or socket.gethostname()
 
 
 def parse_roots(raw: str) -> dict[str, Path]:
@@ -204,9 +238,12 @@ def health():
     return {
         "ok": True,
         "hostname": socket.gethostname(),
+        "device_id": DEVICE_ID,
+        "device_name": DEVICE_NAME,
         "roots": list(ROOTS),
         "all_files": ALLOW_ALL_FILES,
         "input": INPUT_ENABLED,
+        "camera": CAMERA_ENABLED,
         "screen": SCREEN_BACKEND,
         "time": time.time(),
     }
@@ -533,6 +570,178 @@ async def input_scroll(request: Request):
 
 
 # --------------------------------------------------------------------------- #
+# Управление клавиатурой
+# --------------------------------------------------------------------------- #
+
+_keyboard = None       # (Controller, Key) — создаётся один раз при первом запросе
+_keyboard_error = ""
+
+# Именованные клавиши -> атрибут pynput.keyboard.Key. Обычные символы (буквы,
+# цифры, знаки) идут отдельно через ctl.type() и сюда не попадают.
+_KEY_NAMES = {
+    "enter": "enter", "tab": "tab", "esc": "esc", "escape": "esc",
+    "backspace": "backspace", "delete": "delete", "space": "space",
+    "up": "up", "down": "down", "left": "left", "right": "right",
+    "home": "home", "end": "end", "pageup": "page_up", "pagedown": "page_down",
+    "ctrl": "ctrl", "control": "ctrl", "alt": "alt", "shift": "shift", "win": "cmd", "meta": "cmd",
+    **{f"f{i}": f"f{i}" for i in range(1, 13)},
+}
+
+
+def keyboard_controller():
+    global _keyboard, _keyboard_error
+    if _keyboard is not None:
+        return _keyboard
+    if _keyboard_error:
+        raise HTTPException(503, _keyboard_error)
+    try:
+        from pynput.keyboard import Controller, Key
+
+        _keyboard = (Controller(), Key)
+        return _keyboard
+    except Exception as e:
+        _keyboard_error = f"Управление клавиатурой недоступно: {e}"
+        raise HTTPException(503, _keyboard_error)
+
+
+def _resolve_key(ctl_key, name: str):
+    _, Key = ctl_key
+    n = str(name).strip().lower()
+    attr = _KEY_NAMES.get(n)
+    if attr:
+        return getattr(Key, attr)
+    if len(n) == 1:
+        return n
+    raise HTTPException(400, f"Неизвестная клавиша: {name}")
+
+
+@app.post("/input/key")
+async def input_key(request: Request):
+    """Два режима: {"text": "привет"} печатает текст как есть; {"keys": ["ctrl","c"]}
+    нажимает и сразу отпускает перечисленные клавиши вместе (атомарно — так клавиша
+    не может «залипнуть», даже если следующий запрос по сети потеряется)."""
+    d = await _input_body(request)
+    ctl = keyboard_controller()
+    controller, _ = ctl
+
+    text = d.get("text")
+    if text is not None:
+        text = str(text)[:500]
+        if not text:
+            raise HTTPException(400, "Пустой текст")
+        controller.type(text)
+        return {"ok": True}
+
+    keys = d.get("keys")
+    if not isinstance(keys, list) or not (1 <= len(keys) <= 5):
+        raise HTTPException(400, "Нужен 'text' или 'keys' (список от 1 до 5 клавиш)")
+    resolved = [_resolve_key(ctl, k) for k in keys]
+    for k in resolved:
+        controller.press(k)
+    for k in reversed(resolved):
+        controller.release(k)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Камера
+# --------------------------------------------------------------------------- #
+
+class CameraGrabber:
+    """Захват веб-камеры (OpenCV). Как и MssGrabber — для одного потока."""
+
+    def __init__(self, index: int = 0):
+        import cv2
+
+        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+        self.cap = cv2.VideoCapture(index, backend)
+        if not self.cap.isOpened():
+            self.cap.release()
+            raise RuntimeError(f"камера {index} не открылась (занята другой программой или её нет)")
+
+    def grab(self) -> Image.Image:
+        import cv2
+
+        ok, frame = self.cap.read()
+        if not ok or frame is None:
+            raise RuntimeError("не удалось получить кадр с камеры")
+        return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+    def close(self) -> None:
+        self.cap.release()
+
+
+def check_camera(index: int) -> None:
+    if not CAMERA_ENABLED:
+        raise HTTPException(403, "Камера отключена в настройках (CAMERA_ENABLED=0 в .env)")
+    try:
+        import cv2  # noqa: F401
+    except Exception as e:
+        raise HTTPException(503, f"Камера недоступна: библиотека не установлена ({e})")
+
+
+@app.get("/camera/snapshot")
+def camera_snapshot(quality: int = 80, scale: float = 1.0, index: int = 0):
+    quality, scale = int(_clamp(quality, 10, 95)), _clamp(scale, 0.1, 1.0)
+    check_camera(index)
+    try:
+        grabber = CameraGrabber(index)
+    except Exception as e:
+        raise HTTPException(503, f"Камера недоступна: {e}")
+    try:
+        data = grab_and_encode(grabber, quality, scale)
+    except Exception as e:
+        raise HTTPException(503, f"Камера недоступна: {e}")
+    finally:
+        grabber.close()
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+_active_camera_streams = 0
+
+
+@app.get("/camera/stream")
+async def camera_stream(fps: float = 3, quality: int = 60, scale: float = 0.5, index: int = 0):
+    global _active_camera_streams
+    fps, quality, scale = _clamp(fps, 0.5, 15), int(_clamp(quality, 10, 95)), _clamp(scale, 0.1, 1.0)
+    check_camera(index)
+    if _active_camera_streams >= MAX_STREAMS:
+        raise HTTPException(429, "Слишком много одновременных потоков камеры")
+    _active_camera_streams += 1
+
+    async def gen():
+        global _active_camera_streams
+        loop = asyncio.get_running_loop()
+        pool = ThreadPoolExecutor(max_workers=1)
+        grabber = None
+        interval = 1.0 / fps
+        try:
+            grabber = await loop.run_in_executor(pool, CameraGrabber, index)
+            while True:
+                t0 = time.monotonic()
+                data = await loop.run_in_executor(pool, grab_and_encode, grabber, quality, scale)
+                yield (
+                    b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                    + str(len(data)).encode()
+                    + b"\r\n\r\n"
+                    + data
+                    + b"\r\n"
+                )
+                await asyncio.sleep(max(0.0, interval - (time.monotonic() - t0)))
+        finally:
+            _active_camera_streams -= 1
+            if grabber is not None:
+                pool.submit(grabber.close)
+            pool.shutdown(wait=False)
+
+    return StreamingResponse(
+        gen(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Самоуничтожение: удалить агента с компьютера по кнопке с сайта
 # --------------------------------------------------------------------------- #
 
@@ -576,11 +785,14 @@ def self_destruct():
 
 # --------------------------------------------------------------------------- #
 
-def register_once(server_url: str, token: str, host: str, port: int, timeout: float = 10.0) -> bool:
-    """Сообщает сайту адрес агента (внутри VPN). True, если сайт принял."""
+def register_once(
+    server_url: str, token: str, host: str, port: int,
+    device_id: str, device_name: str, timeout: float = 10.0,
+) -> bool:
+    """Сообщает сайту адрес и личность агента (внутри VPN). True, если сайт принял."""
     req = urllib.request.Request(
         server_url + "/api/agent/register",
-        data=json.dumps({"host": host, "port": port}).encode(),
+        data=json.dumps({"host": host, "port": port, "device_id": device_id, "name": device_name}).encode(),
         method="POST",
         headers={"Content-Type": "application/json", "X-Agent-Token": token},
     )
@@ -595,7 +807,7 @@ def register_once(server_url: str, token: str, host: str, port: int, timeout: fl
 def _register_loop() -> None:
     """Сообщает адрес при запуске и потом раз в 5 минут (если сайт был недоступен, пробует чаще)."""
     while True:
-        ok = register_once(SERVER_URL, TOKEN, HOST, PORT)
+        ok = register_once(SERVER_URL, TOKEN, HOST, PORT, DEVICE_ID, DEVICE_NAME)
         time.sleep(300 if ok else 60)
 
 
@@ -608,7 +820,10 @@ def main() -> None:
     if not ROOTS and not ALLOW_ALL_FILES:
         sys.exit("ALLOWED_DIRS не задан. Пример: ALLOWED_DIRS=docs=C:\\Users\\Me\\Documents")
     where = "весь диск" if ALLOW_ALL_FILES else ", ".join(ROOTS)
-    print(f"Агент слушает {HOST}:{PORT}, файлы: {where}, мышь: {INPUT_ENABLED}, экран: {SCREEN_BACKEND}")
+    print(
+        f"Агент «{DEVICE_NAME}» ({DEVICE_ID[:8]}) слушает {HOST}:{PORT}, файлы: {where}, "
+        f"мышь/клавиатура: {INPUT_ENABLED}, камера: {CAMERA_ENABLED}, экран: {SCREEN_BACKEND}"
+    )
     if SERVER_URL and not HOST.startswith("127."):
         threading.Thread(target=_register_loop, daemon=True).start()
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")

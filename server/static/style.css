@@ -70,6 +70,18 @@ body {
   border-bottom: 1px solid var(--border);
 }
 .brand { font-weight: 650; display: flex; align-items: center; gap: 8px; }
+.brand select { font-weight: 600; max-width: 220px; }
+.pane-title { margin: 0; font-size: 18px; }
+.text-input {
+  font: inherit;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  width: 100%;
+  max-width: 320px;
+}
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--danger); }
@@ -132,8 +144,9 @@ table.files a { color: var(--accent); text-decoration: none; }
   border: 1px solid var(--border);
   border-radius: 10px;
 }
-#screen { max-width: 100%; height: auto; border-radius: 6px; }
-#screen.controllable { cursor: crosshair; }
+#screen, #camera { max-width: 100%; height: auto; border-radius: 6px; }
+#screen.controllable { cursor: crosshair; outline: 2px solid var(--accent); outline-offset: 2px; }
+#screen:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 .button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .button.danger:hover { opacity: 0.9; border-color: var(--danger); }
 .danger-card { border-color: var(--danger); }

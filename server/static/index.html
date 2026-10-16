@@ -10,13 +10,15 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      Дача
+      <select id="device-select" title="Какой компьютер показывать"></select>
       <span id="dot" class="dot" title="Статус компьютера"></span>
       <span id="host" class="muted"></span>
     </div>
     <nav class="tabs">
       <button class="tab active" data-tab="files">Файлы</button>
       <button class="tab" data-tab="screen">Экран</button>
+      <button class="tab" data-tab="camera">Камера</button>
+      <button class="tab" data-tab="log">Журнал</button>
       <button class="tab" data-tab="setup">Установка</button>
     </nav>
     <button id="logout" class="button ghost">Выйти</button>
@@ -73,16 +75,81 @@
         <button id="fullscreen" class="button">Во весь экран</button>
         <a id="snap" class="button" href="#" download="screen.jpg">Снимок</a>
       </div>
-      <p id="control-hint" class="muted" hidden>Управление включено: клик по картинке — щелчок мышью на даче, правый клик и двойной клик работают, колесо — прокрутка.</p>
+      <p id="control-hint" class="muted" hidden>
+        Управление включено: клик по картинке — щелчок мышью, правый клик и двойной клик работают, колесо — прокрутка.
+        Клик по картинке, затем печатай — буквы, Enter, Backspace, Tab, Esc, стрелки и Delete уходят на компьютер.
+      </p>
+      <div id="key-combos" class="toolbar controls" hidden>
+        <span class="muted">Быстрые сочетания:</span>
+        <button class="button" data-combo="ctrl,c">Ctrl+C</button>
+        <button class="button" data-combo="ctrl,v">Ctrl+V</button>
+        <button class="button" data-combo="ctrl,z">Ctrl+Z</button>
+        <button class="button" data-combo="ctrl,a">Ctrl+A</button>
+        <button class="button" data-combo="alt,tab">Alt+Tab</button>
+      </div>
       <div class="screen-wrap">
-        <img id="screen" alt="Экран дачного компьютера" hidden>
+        <img id="screen" alt="Экран компьютера" tabindex="0" hidden>
         <p id="screen-hint" class="muted">Нажми «Старт», чтобы увидеть экран.</p>
+      </div>
+    </section>
+
+    <section id="tab-camera" class="pane" hidden>
+      <div class="toolbar controls">
+        <button id="cam-toggle" class="button primary">Старт</button>
+        <label>Кадров/с
+          <select id="cam-fps">
+            <option>1</option><option selected>3</option><option>5</option><option>10</option>
+          </select>
+        </label>
+        <label>Размер
+          <select id="cam-scale">
+            <option value="0.25">25%</option>
+            <option value="0.5" selected>50%</option>
+            <option value="1">100%</option>
+          </select>
+        </label>
+        <a id="cam-snap" class="button" href="#" download="camera.jpg">Снимок</a>
+      </div>
+      <div class="screen-wrap">
+        <img id="camera" alt="Камера компьютера" hidden>
+        <p id="camera-hint" class="muted">Нажми «Старт», чтобы включить камеру.</p>
+      </div>
+    </section>
+
+    <section id="tab-log" class="pane" hidden>
+      <div class="toolbar">
+        <h2 class="pane-title">Журнал действий</h2>
+        <button id="log-refresh" class="button">Обновить</button>
+      </div>
+      <div class="table-wrap">
+        <table class="files">
+          <thead><tr><th>Когда</th><th>Действие</th><th>Компьютер</th><th>Откуда</th></tr></thead>
+          <tbody id="log-rows"></tbody>
+        </table>
       </div>
     </section>
 
     <section id="tab-setup" class="pane" hidden>
       <div class="card">
-        <h2>Установка на дачный компьютер — командой (рекомендуется)</h2>
+        <h2>Мои компьютеры</h2>
+        <div class="table-wrap">
+          <table class="files">
+            <thead><tr><th>Имя</th><th>Статус</th><th></th></tr></thead>
+            <tbody id="device-rows"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Установка нового компьютера</h2>
+        <p class="muted">Можно подключить сколько угодно компьютеров — каждый появится в переключателе вверху страницы отдельной записью. Имя необязательно: если не указать, компьютер подпишется своим именем в Windows (переименовать можно потом в переключателе).</p>
+        <p><label>Имя этого компьютера (необязательно)
+          <input id="device-name" type="text" placeholder="например, Квартира" maxlength="40" class="text-input">
+        </label></p>
+      </div>
+
+      <div class="card">
+        <h2>Установка — командой (рекомендуется)</h2>
         <p class="muted">Ничего не скачивается и не сохраняется на диск как отдельный файл — нечему лежать на рабочем столе и нечего случайно удалить.</p>
         <ol class="steps">
           <li>Сядь за дачный компьютер сам и открой этот сайт там.</li>
@@ -109,9 +176,9 @@
       </div>
 
       <div class="card danger-card">
-        <h2>Удалить агент с дачного компьютера</h2>
-        <p class="muted">Нажми, если нужно убрать программу с дачи и не искать её вручную. Агент снимет автозапуск и удалит свою папку целиком. Отменить нельзя — чтобы вернуть, нужно будет установить заново.</p>
-        <p><button id="self-destruct" class="button danger" type="button">Удалить агент с дачи</button> <span id="destruct-hint" class="muted"></span></p>
+        <h2>Удалить выбранный компьютер</h2>
+        <p class="muted">Удаляет компьютер, выбранный сейчас вверху страницы (<b id="destruct-name">—</b>), а не все сразу. Агент снимет автозапуск и удалит свою папку целиком. Отменить нельзя — чтобы вернуть, нужно будет установить заново.</p>
+        <p><button id="self-destruct" class="button danger" type="button">Удалить этот компьютер</button> <span id="destruct-hint" class="muted"></span></p>
       </div>
     </section>
   </main>

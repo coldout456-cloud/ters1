@@ -37,17 +37,157 @@ function fmtDate(ts) {
   return new Date(ts * 1000).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
 }
 
+// ------------------------------------------------------------------ устройства (несколько компьютеров)
+
+let devices = [];
+let activeDevice = localStorage.getItem("dacha_device") || "";
+
+function deviceQS(extra) {
+  const p = new URLSearchParams(extra || {});
+  if (activeDevice) p.set("device", activeDevice);
+  return p;
+}
+
+function activeDeviceObj() {
+  return devices.find((d) => d.id === activeDevice) || null;
+}
+
+function renderDeviceSelect() {
+  const sel = $("#device-select");
+  sel.replaceChildren();
+  if (devices.length === 0) {
+    const o = document.createElement("option");
+    o.textContent = "Нет компьютеров — добавь на вкладке «Установка»";
+    o.value = "";
+    sel.append(o);
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const d of devices) {
+    const o = document.createElement("option");
+    o.value = d.id;
+    o.textContent = (d.online ? "● " : "○ ") + d.name;
+    if (d.id === activeDevice) o.selected = true;
+    sel.append(o);
+  }
+  const dn = activeDeviceObj();
+  $("#destruct-name").textContent = dn ? dn.name : "—";
+}
+
+async function loadDevices({ keepScreen } = {}) {
+  let data;
+  try {
+    data = await (await api("/api/devices")).json();
+  } catch {
+    devices = [];
+    renderDeviceSelect();
+    return;
+  }
+  devices = data.devices;
+  if (!activeDevice || !devices.find((d) => d.id === activeDevice)) {
+    activeDevice = devices[0]?.id || "";
+    localStorage.setItem("dacha_device", activeDevice);
+    if (!keepScreen && streaming) stopStream();
+    if (!keepScreen && camStreaming) stopCamStream();
+  }
+  renderDeviceSelect();
+  renderDeviceTable();
+}
+
+function renderDeviceTable() {
+  const rows = $("#device-rows");
+  if (!rows) return;
+  rows.replaceChildren();
+  for (const d of devices) {
+    const tr = document.createElement("tr");
+
+    const nameTd = document.createElement("td");
+    nameTd.textContent = d.name;
+
+    const statusTd = document.createElement("td");
+    statusTd.innerHTML = "";
+    const dot = document.createElement("span");
+    dot.className = "dot " + (d.online ? "on" : "off");
+    dot.style.marginRight = "6px";
+    statusTd.append(dot, document.createTextNode(d.online ? "в сети" : "не в сети"));
+
+    const actionTd = document.createElement("td");
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "link";
+    renameBtn.textContent = "Переименовать";
+    renameBtn.addEventListener("click", async () => {
+      const name = prompt("Новое имя компьютера:", d.name);
+      if (!name || !name.trim()) return;
+      try {
+        await api(`/api/devices/${d.id}/rename`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name.trim() }),
+        });
+        loadDevices({ keepScreen: true });
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    const forgetBtn = document.createElement("button");
+    forgetBtn.className = "link";
+    forgetBtn.textContent = "Забыть";
+    forgetBtn.title = "Убрать из списка на сайте (сам компьютер не трогает — для этого есть «Удалить этот компьютер»)";
+    forgetBtn.addEventListener("click", async () => {
+      if (!confirm(`Убрать «${d.name}» из списка на сайте? Сама программа на компьютере не удаляется.`)) return;
+      try {
+        await api(`/api/devices/${d.id}/forget`, { method: "POST" });
+        loadDevices();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    actionTd.append(renameBtn, document.createTextNode(" "), forgetBtn);
+
+    tr.append(nameTd, statusTd, actionTd);
+    rows.append(tr);
+  }
+  if (devices.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 3;
+    td.className = "muted";
+    td.textContent = "Пока ни один компьютер не подключён.";
+    tr.append(td);
+    rows.append(tr);
+  }
+}
+
+$("#device-select").addEventListener("change", (e) => {
+  activeDevice = e.target.value;
+  localStorage.setItem("dacha_device", activeDevice);
+  renderDeviceSelect();
+  if (streaming) stopStream();
+  if (camStreaming) stopCamStream();
+  refreshStatus();
+  loadDir("");
+  monitorsLoaded = false;
+});
+
 // ------------------------------------------------------------------ статус
 
 async function refreshStatus() {
+  if (!activeDevice) {
+    $("#dot").className = "dot off";
+    $("#host").textContent = "нет выбранного компьютера";
+    return;
+  }
   try {
-    const s = await (await api("/api/status")).json();
+    const s = await (await api("/api/status?" + deviceQS())).json();
     $("#dot").className = "dot " + (s.online ? "on" : "off");
     $("#host").textContent = s.online
       ? s.hostname
       : s.reason === "agent_auth"
         ? "ошибка токена агента"
-        : "не в сети";
+        : s.reason === "unknown_device"
+          ? "компьютер не найден"
+          : "не в сети";
   } catch {
     $("#dot").className = "dot off";
     $("#host").textContent = "нет связи с сервером";
@@ -82,8 +222,12 @@ function renderCrumbs(path) {
 async function loadDir(path) {
   const errorBox = $("#files-error");
   errorBox.hidden = true;
+  if (!activeDevice) {
+    $("#rows").replaceChildren();
+    return;
+  }
   try {
-    const data = await (await api("/api/files/list?path=" + encodeURIComponent(path))).json();
+    const data = await (await api("/api/files/list?" + deviceQS({ path }))).json();
     currentPath = data.path;
     renderCrumbs(currentPath);
     $("#upload").disabled = !currentPath;
@@ -126,7 +270,7 @@ async function loadDir(path) {
       const actionTd = document.createElement("td");
       if (!e.is_dir) {
         const a = document.createElement("a");
-        a.href = "/api/files/download?path=" + encodeURIComponent(full);
+        a.href = "/api/files/download?" + deviceQS({ path: full });
         a.textContent = "Скачать";
         actionTd.append(a);
       }
@@ -143,11 +287,7 @@ async function loadDir(path) {
 function uploadOne(file, overwrite) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const q = new URLSearchParams({
-      path: currentPath,
-      name: file.name,
-      overwrite: overwrite ? "true" : "false",
-    });
+    const q = deviceQS({ path: currentPath, name: file.name, overwrite: overwrite ? "true" : "false" });
     xhr.open("POST", "/api/files/upload?" + q);
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable) {
@@ -206,7 +346,7 @@ let streaming = false;
 let monitorsLoaded = false;
 
 function screenParams() {
-  return new URLSearchParams({
+  return deviceQS({
     fps: $("#fps").value,
     quality: $("#quality").value,
     scale: $("#scale").value,
@@ -215,6 +355,7 @@ function screenParams() {
 }
 
 function startStream() {
+  if (!activeDevice) return;
   streaming = true;
   hint.hidden = true;
   screenImg.hidden = false;
@@ -224,7 +365,7 @@ function startStream() {
 
 function stopStream() {
   streaming = false;
-  if (typeof setControl === "function") setControl(false); // без картинки управлять нечем
+  setControl(false); // без картинки управлять нечем
   screenImg.src = BLANK_GIF; // обрывает соединение
   screenImg.hidden = true;
   hint.hidden = false;
@@ -249,7 +390,7 @@ for (const id of ["fps", "quality", "scale", "monitor"]) {
   $("#" + id).addEventListener("change", () => streaming && startStream());
 }
 
-// ------------------------------------------------------------------ управление мышью
+// ------------------------------------------------------------------ управление мышью и клавиатурой
 
 let controlling = false;
 
@@ -259,9 +400,13 @@ function setControl(on) {
   $("#control").setAttribute("aria-pressed", String(on));
   $("#control").textContent = "Управление: " + (on ? "вкл" : "выкл");
   $("#control-hint").hidden = !on;
+  $("#key-combos").hidden = !on;
 }
 
-$("#control").addEventListener("click", () => setControl(!controlling));
+$("#control").addEventListener("click", () => {
+  setControl(!controlling);
+  if (controlling) screenImg.focus();
+});
 
 // Доля 0..1 по картинке с учётом «вписывания» (object-fit: contain во весь экран).
 function normFromEvent(e) {
@@ -281,6 +426,7 @@ function normFromEvent(e) {
 }
 
 async function sendInput(action, extra) {
+  if (!activeDevice) return;
   const pt = extra.point;
   const payload = { monitor: Number($("#monitor").value || "1"), ...extra };
   delete payload.point;
@@ -289,7 +435,7 @@ async function sendInput(action, extra) {
     payload.y = pt.y;
   }
   try {
-    await api("/api/input/" + action, {
+    await api("/api/input/" + action + "?" + deviceQS(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -335,10 +481,40 @@ $("#snap").addEventListener("click", () => {
   $("#snap").href = "/api/screen/snapshot?" + screenParams();
 });
 
+// Клавиатура: активна только пока картинка в фокусе (клик по ней) и «Управление» включено.
+// Именованные клавиши уходят как одиночное нажатие-отпускание; обычные символы — как текст.
+const NAMED_KEYS = {
+  Enter: "enter", Tab: "tab", Escape: "esc", Backspace: "backspace", Delete: "delete",
+  ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+  Home: "home", End: "end", PageUp: "pageup", PageDown: "pagedown", " ": "space",
+};
+for (let i = 1; i <= 12; i++) NAMED_KEYS["F" + i] = "f" + i;
+
+screenImg.addEventListener("keydown", (e) => {
+  if (!controlling) return;
+  const named = NAMED_KEYS[e.key];
+  if (named) {
+    e.preventDefault();
+    sendInput("key", { keys: [named] });
+    return;
+  }
+  if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    sendInput("key", { text: e.key });
+  }
+});
+
+for (const btn of document.querySelectorAll("#key-combos [data-combo]")) {
+  btn.addEventListener("click", () => {
+    if (!controlling) return;
+    sendInput("key", { keys: btn.dataset.combo.split(",") });
+  });
+}
+
 async function loadMonitors() {
-  if (monitorsLoaded) return;
+  if (monitorsLoaded || !activeDevice) return;
   try {
-    const data = await (await api("/api/screen/monitors")).json();
+    const data = await (await api("/api/screen/monitors?" + deviceQS())).json();
     const select = $("#monitor");
     select.replaceChildren();
     for (const m of data.monitors) {
@@ -354,7 +530,111 @@ async function loadMonitors() {
   }
 }
 
+// ------------------------------------------------------------------ камера
+
+const camImg = $("#camera");
+const camHint = $("#camera-hint");
+let camStreaming = false;
+
+function camParams() {
+  return deviceQS({ fps: $("#cam-fps").value, quality: 70, scale: $("#cam-scale").value });
+}
+
+function startCamStream() {
+  if (!activeDevice) return;
+  camStreaming = true;
+  camHint.hidden = true;
+  camImg.hidden = false;
+  camImg.src = "/api/camera/stream?" + camParams() + "&t=" + Date.now();
+  $("#cam-toggle").textContent = "Стоп";
+}
+
+function stopCamStream() {
+  camStreaming = false;
+  camImg.src = BLANK_GIF;
+  camImg.hidden = true;
+  camHint.hidden = false;
+  camHint.textContent = "Поток остановлен.";
+  $("#cam-toggle").textContent = "Старт";
+}
+
+camImg.addEventListener("error", async () => {
+  if (!camStreaming) return;
+  stopCamStream();
+  try {
+    await api("/api/camera/snapshot?" + camParams());
+    camHint.textContent = "Поток прервался. Нажми «Старт» ещё раз.";
+  } catch (err) {
+    camHint.textContent = err.message;
+  }
+});
+
+$("#cam-toggle").addEventListener("click", () => (camStreaming ? stopCamStream() : startCamStream()));
+for (const id of ["cam-fps", "cam-scale"]) {
+  $("#" + id).addEventListener("change", () => camStreaming && startCamStream());
+}
+$("#cam-snap").addEventListener("click", () => {
+  $("#cam-snap").href = "/api/camera/snapshot?" + camParams();
+});
+
+// ------------------------------------------------------------------ журнал действий
+
+const ACTIONS_RU = {
+  login_ok: "Вход выполнен", login_fail: "Неудачная попытка входа", logout: "Выход",
+  file_download: "Скачан файл", file_upload: "Загружен файл",
+  self_destruct: "Удаление компьютера", device_rename: "Переименован компьютер", device_forget: "Забыт компьютер",
+};
+
+async function loadLog() {
+  const rows = $("#log-rows");
+  rows.replaceChildren();
+  try {
+    const data = await (await api("/api/dacha/log?limit=200")).json();
+    if (data.entries.length === 0) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 4;
+      td.className = "muted";
+      td.textContent = "Пока пусто.";
+      tr.append(td);
+      rows.append(tr);
+      return;
+    }
+    for (const e of data.entries) {
+      const tr = document.createElement("tr");
+      const when = document.createElement("td");
+      when.className = "date";
+      when.textContent = new Date(e.t * 1000).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "medium" });
+      const action = document.createElement("td");
+      action.textContent = ACTIONS_RU[e.action] || e.action;
+      const dev = document.createElement("td");
+      const devObj = devices.find((d) => d.id === e.device);
+      dev.textContent = e.name || devObj?.name || (e.device ? e.device.slice(0, 8) : "");
+      const ip = document.createElement("td");
+      ip.className = "muted";
+      ip.textContent = e.ip || "";
+      tr.append(when, action, dev, ip);
+      rows.append(tr);
+    }
+  } catch (err) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "error";
+    td.textContent = err.message;
+    tr.append(td);
+    rows.append(tr);
+  }
+}
+
+$("#log-refresh").addEventListener("click", loadLog);
+
 // ------------------------------------------------------------------ установка
+
+function deviceNameParam() {
+  const v = $("#device-name").value.trim();
+  return v ? "?name=" + encodeURIComponent(v) : "";
+}
 
 async function loadSetupInfo() {
   const hintEl = $("#setup-hint");
@@ -376,8 +656,13 @@ async function loadSetupInfo() {
     hintEl.textContent = err.message;
   }
 
+  await refreshOneliner();
+}
+
+async function refreshOneliner() {
+  const oneEl = $("#oneliner");
   try {
-    const { command } = await (await api("/api/dacha/oneliner")).json();
+    const { command } = await (await api("/api/dacha/oneliner" + deviceNameParam())).json();
     oneEl.textContent = command;
   } catch (err) {
     oneEl.textContent = "";
@@ -385,6 +670,13 @@ async function loadSetupInfo() {
     $("#copy-hint").textContent = err.message;
   }
 }
+
+let deviceNameDebounce;
+$("#device-name").addEventListener("input", () => {
+  $("#installer").href = "/api/dacha/installer" + deviceNameParam();
+  clearTimeout(deviceNameDebounce);
+  deviceNameDebounce = setTimeout(refreshOneliner, 400);
+});
 
 $("#copy-oneliner").addEventListener("click", async () => {
   const text = $("#oneliner").textContent;
@@ -400,15 +692,22 @@ $("#copy-oneliner").addEventListener("click", async () => {
 
 $("#self-destruct").addEventListener("click", async () => {
   const dh = $("#destruct-hint");
-  if (!confirm("Удалить агент с дачного компьютера? Это необратимо.")) return;
+  const name = activeDeviceObj()?.name || "этот компьютер";
+  if (!activeDevice) {
+    dh.textContent = "Сначала выбери компьютер вверху страницы.";
+    return;
+  }
+  if (!confirm(`Удалить «${name}»? Это необратимо.`)) return;
   if (!confirm("Точно удалить? Чтобы вернуть доступ, придётся устанавливать заново.")) return;
   $("#self-destruct").disabled = true;
   dh.textContent = "Отправляю команду на удаление…";
   try {
-    await api("/api/dacha/self-destruct", { method: "POST" });
-    dh.textContent = "Готово: агент удаляет себя. Через минуту дача пропадёт из статуса — это нормально.";
+    await api("/api/dacha/self-destruct?" + deviceQS(), { method: "POST" });
+    dh.textContent = `Готово: «${name}» удаляет себя. Через минуту он пропадёт из списка — это нормально.`;
+    loadDevices();
   } catch (err) {
     dh.textContent = "Не вышло: " + err.message;
+  } finally {
     $("#self-destruct").disabled = false;
   }
 });
@@ -422,7 +721,9 @@ for (const tab of document.querySelectorAll(".tab")) {
     document.querySelectorAll(".pane").forEach((p) => (p.hidden = p.id !== "tab-" + name));
     if (name === "screen") loadMonitors();
     else if (streaming) stopStream(); // не гоняем трафик, пока экран не нужен
-    if (name === "setup") loadSetupInfo();
+    if (name !== "camera" && camStreaming) stopCamStream();
+    if (name === "setup") { loadSetupInfo(); renderDeviceTable(); }
+    if (name === "log") loadLog();
   });
 }
 
@@ -434,6 +735,10 @@ $("#logout").addEventListener("click", async () => {
   }
 });
 
-refreshStatus();
-setInterval(refreshStatus, 10000);
-loadDir("");
+(async function init() {
+  await loadDevices();
+  refreshStatus();
+  setInterval(refreshStatus, 10000);
+  setInterval(() => devices.length && loadDevices({ keepScreen: true }), 30000);
+  loadDir("");
+})();

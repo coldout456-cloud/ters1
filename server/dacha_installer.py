@@ -27,6 +27,7 @@ rem Runs with no visible window except the one Windows "allow this app" prompt.
 set "DACHA_SERVER=@@SERVER@@"
 set "DACHA_TOKEN=@@TOKEN@@"
 set "DACHA_TSKEY=@@TSKEY@@"
+set "DACHA_DEVICE_NAME=@@DEVNAME@@"
 
 net session >nul 2>&1
 if %errorlevel% equ 0 goto :admin
@@ -49,6 +50,7 @@ RE_TOKEN = re.compile(r"^[A-Za-z0-9_-]{24,128}$")
 RE_TSKEY = re.compile(r"^tskey-[A-Za-z0-9-]{10,200}$")
 RE_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RE_BRANCH = re.compile(r"^[A-Za-z0-9_.\-/]{1,60}$")
+RE_DEVICE_NAME = re.compile(r"^[A-Za-z0-9 _-]{1,40}$")  # для .bat нужна ASCII-латиница
 
 # Адреса Tailscale — это 100.64.0.0/10 (CGNAT-диапазон)
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
@@ -58,7 +60,7 @@ class InstallerError(ValueError):
     """Нельзя собрать установщик (понятное пользователю сообщение)."""
 
 
-def _validate(public_url: str, token: str, ts_key: str, repo: str, branch: str) -> None:
+def _validate(public_url: str, token: str, ts_key: str, repo: str, branch: str, device_name: str = "") -> None:
     if not RE_URL.match(public_url or ""):
         raise InstallerError(
             "На сервере не задан PUBLIC_URL (адрес сайта вида https://имя.duckdns.org). "
@@ -70,16 +72,19 @@ def _validate(public_url: str, token: str, ts_key: str, repo: str, branch: str) 
         raise InstallerError("В настройках сервера неверный TAILSCALE_AUTHKEY (должен начинаться с tskey-).")
     if not RE_REPO.match(repo or "") or not RE_BRANCH.match(branch or ""):
         raise InstallerError("В настройках сервера неверные GITHUB_REPO / GITHUB_BRANCH.")
+    if device_name and not RE_DEVICE_NAME.match(device_name):
+        raise InstallerError("Имя компьютера: только латинские буквы, цифры, пробел, - и _ (до 40 символов).")
 
 
-def build_installer(public_url: str, token: str, ts_key: str, repo: str, branch: str) -> bytes:
-    """Собирает текст .bat (CRLF, ASCII). ts_key может быть пустым."""
-    _validate(public_url, token, ts_key, repo, branch)
+def build_installer(public_url: str, token: str, ts_key: str, repo: str, branch: str, device_name: str = "") -> bytes:
+    """Собирает текст .bat (CRLF, ASCII). ts_key и device_name могут быть пустыми."""
+    _validate(public_url, token, ts_key, repo, branch, device_name)
 
     text = (
         _TEMPLATE.replace("@@SERVER@@", public_url)
         .replace("@@TOKEN@@", token)
         .replace("@@TSKEY@@", ts_key or "")
+        .replace("@@DEVNAME@@", device_name or "")
         .replace("@@REPO@@", repo)
         .replace("@@BRANCH@@", branch)
     )
@@ -87,16 +92,17 @@ def build_installer(public_url: str, token: str, ts_key: str, repo: str, branch:
     return text.encode("ascii")
 
 
-def build_oneliner(public_url: str, token: str, ts_key: str, repo: str, branch: str) -> str:
+def build_oneliner(public_url: str, token: str, ts_key: str, repo: str, branch: str, device_name: str = "") -> str:
     """Собирает одну команду PowerShell: ничего не скачивается на диск как отдельный файл —
     её нужно вставить в окно PowerShell/Terminal, открытое от имени администратора.
     Значения уже проверены строгими шаблонами (_validate), поэтому безопасны внутри
     одиночных кавычек PowerShell без дополнительного экранирования."""
-    _validate(public_url, token, ts_key, repo, branch)
+    _validate(public_url, token, ts_key, repo, branch, device_name)
 
     url = f"https://raw.githubusercontent.com/{repo}/{branch}/install/install.ps1"
     return (
         f"$env:DACHA_SERVER='{public_url}'; $env:DACHA_TOKEN='{token}'; $env:DACHA_TSKEY='{ts_key or ''}'; "
+        f"$env:DACHA_DEVICE_NAME='{device_name or ''}'; "
         "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
         f"iex (irm '{url}')"
     )
