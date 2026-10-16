@@ -22,6 +22,10 @@ $TaskName   = 'DachaAgent'
 $TsExe      = 'C:\Program Files\Tailscale\tailscale.exe'
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+# Снимаем метку «идёт удаление», если она осталась с прошлого раза (например,
+# удаление прервалось на середине) — иначе сторожевой run-agent.ps1 решит,
+# что агент поднимать больше не нужно, и после установки он не запустится.
+Remove-Item (Join-Path $InstallDir '.uninstalling') -Force -ErrorAction SilentlyContinue
 try { Start-Transcript -Path (Join-Path $InstallDir 'install.log') -Append | Out-Null } catch {}
 
 # ----------------------------------------------------------------------------- вывод

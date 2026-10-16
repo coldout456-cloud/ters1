@@ -9,6 +9,7 @@ $py     = Join-Path $agent '.venv\Scripts\python.exe'
 $ts     = 'C:\Program Files\Tailscale\tailscale.exe'
 $outLog = Join-Path $dir 'agent.out.log'
 $errLog = Join-Path $dir 'agent.err.log'
+$marker = Join-Path $dir '.uninstalling'  # ставит uninstall.ps1: значит, агент больше поднимать не нужно
 
 # Вывод Python в файл должен быть в UTF-8, иначе русские сообщения могут уронить агента
 $env:PYTHONUTF8 = '1'
@@ -31,5 +32,9 @@ while ($true) {
     $env:AGENT_HOST = $ip
     Start-Process -FilePath $py -ArgumentList 'agent.py' -WorkingDirectory $agent -WindowStyle Hidden -Wait `
         -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+    # Агент попросил себя удалить (кнопка на сайте): не поднимаем его снова,
+    # иначе uninstall.ps1 никогда не успеет остановить автозапуск — агент
+    # возрождался бы быстрее, чем его можно было выключить.
+    if (Test-Path $marker) { break }
     Start-Sleep -Seconds 5
 }

@@ -544,6 +544,20 @@ def self_destruct():
     uninstall = INSTALL_DIR / "uninstall.ps1"
     if os.name != "nt" or not uninstall.exists():
         raise HTTPException(503, "Самоуничтожение доступно только на установленной копии (Windows)")
+
+    # Ставим метку САМИ и сразу же, синхронно, до запуска uninstall.ps1 и тем
+    # более до выхода из процесса. Раньше метку ставил uninstall.ps1 — но пока
+    # Windows успевала поднять powershell.exe (от десятых долей до пары секунд:
+    # антивирус, холодный диск), агент уже мог завершиться по таймеру, и
+    # сторож run-agent.ps1 успевал проверить метку ДО того, как она появлялась,
+    # и снова поднимал агента — кнопка «удалить» как будто работала (uninstall
+    # всё равно потом запускался), но агент тут же оживал заново. Создавая файл
+    # прямо здесь, без паузы, мы убираем саму гонку.
+    try:
+        (INSTALL_DIR / ".uninstalling").touch(exist_ok=True)
+    except Exception:
+        pass
+
     import subprocess
 
     DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP

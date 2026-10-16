@@ -6,15 +6,14 @@ param([switch]$Yes)
 $ErrorActionPreference = 'Continue'
 $InstallDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TaskName   = 'DachaAgent'
+$Marker     = Join-Path $InstallDir '.uninstalling'
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 if ($Yes) {
-    # Запущено с сайта: ответа ждать не от кого. Даём HTTP-ответу агента уйти и
-    # агенту завершиться, потом доделываем остальное. Снятие автозапуска и правила
+    # Запущено с сайта: ответа ждать не от кого. Снятие автозапуска и правила
     # брандмауэра требует прав администратора; если их нет, папку и процессы всё
     # равно уберём (они принадлежат пользователю), а задача/правило останутся.
-    Start-Sleep -Seconds 2
 } else {
     if (-not $isAdmin) {
         Write-Host 'Нужны права администратора. Запусти uninstall.bat двойным кликом.' -ForegroundColor Red
@@ -28,6 +27,13 @@ if ($Yes) {
         exit 0
     }
 }
+
+# Ставим метку только теперь, когда точно продолжаем: это говорит сторожевому
+# run-agent.ps1 не поднимать агента заново. Без неё была гонка — сторож
+# перезапускал агент быстрее, чем мы успевали его остановить (поиск процесса
+# по CommandLine через WMI ненадёжен: на многих системах эта информация для
+# чужого процесса не отдаётся), и кнопка «Удалить» с сайта на деле ничего не удаляла.
+try { New-Item -ItemType File -Path $Marker -Force -ErrorAction Stop | Out-Null } catch {}
 
 try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
