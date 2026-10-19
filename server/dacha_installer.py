@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import base64
 import ipaddress
 import re
 
@@ -93,18 +94,27 @@ def build_installer(public_url: str, token: str, ts_key: str, repo: str, branch:
 
 
 def build_oneliner(public_url: str, token: str, ts_key: str, repo: str, branch: str, device_name: str = "") -> str:
-    """Собирает одну команду PowerShell: ничего не скачивается на диск как отдельный файл —
-    её нужно вставить в окно PowerShell/Terminal, открытое от имени администратора.
-    Значения уже проверены строгими шаблонами (_validate), поэтому безопасны внутри
-    одиночных кавычек PowerShell без дополнительного экранирования."""
+    """Собирает одну команду PowerShell: её нужно вставить в окно PowerShell/Terminal,
+    открытое от имени администратора. Сама команда не ждёт окончания установки и не
+    занимает это окно: она запускает install.ps1 в отдельном, невидимом, уже-админском
+    процессе (дочерний процесс наследует права администратора от родителя без нового
+    запроса Windows) и сразу же завершает текущее окно — так же незаметно, как установка
+    файлом. Значения вшиваются внутрь закодированной Base64 команды, поэтому отдельного
+    экранирования кавычек не нужно; _validate всё равно проверяет их строгими шаблонами."""
     _validate(public_url, token, ts_key, repo, branch, device_name)
 
     url = f"https://raw.githubusercontent.com/{repo}/{branch}/install/install.ps1"
-    return (
+    inner = (
         f"$env:DACHA_SERVER='{public_url}'; $env:DACHA_TOKEN='{token}'; $env:DACHA_TSKEY='{ts_key or ''}'; "
         f"$env:DACHA_DEVICE_NAME='{device_name or ''}'; "
         "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
         f"iex (irm '{url}')"
+    )
+    encoded = base64.b64encode(inner.encode("utf-16-le")).decode("ascii")
+    return (
+        "Start-Process powershell -WindowStyle Hidden -ArgumentList "
+        f"'-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','{encoded}'; "
+        "exit"
     )
 
 

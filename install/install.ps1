@@ -417,6 +417,10 @@ try {
     # ---- 6. Tailscale
     Say 'Подключаю VPN (Tailscale)'
     if (-not (Test-Path $TsExe)) { Install-Tailscale }
+    # Явно ставим автозапуск службы Tailscale: держит VPN именно она (не оконное
+    # приложение), и она должна подниматься сама при каждой загрузке Windows, даже
+    # без входа пользователя — так агент сможет получить адрес сразу после входа.
+    try { Set-Service -Name 'Tailscale' -StartupType Automatic -ErrorAction SilentlyContinue } catch {}
     try { Start-Service -Name 'Tailscale' -ErrorAction SilentlyContinue } catch {}
     Connect-Tailscale $authKey
     # Соединение держит служба Tailscale, а не оконное приложение. Закрываем окно
